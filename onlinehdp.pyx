@@ -3,11 +3,15 @@ online hdp with lazy update
 part of code is adapted from Matt's online lda code
 """
 import numpy as np
+cimport numpy as np
 import scipy.special as sp
 from scipy.optimize import minimize
 from scipy.misc import logsumexp
-import random
+import random, time
 from concurrent.futures import ThreadPoolExecutor
+
+DTYPE = np.longdouble
+ctypedef np.double_t DTYPE_t
 
 meanchangethresh = 0.001
 min_adding_noise_point = 10
@@ -35,12 +39,11 @@ def expect_sticks(sticks):
 
     n = len(sticks[0]) + 1
     Esticks = np.zeros(n)
-    Esticks[-1] = 1.
     Esticks[0:n-1] = E0_W
     Esticks[1:] = Esticks[1:] * np.cumprod(E1_W)
     return Esticks 
 
-def expect_log_sticks(sticks):
+def expect_log_sticks(np.ndarray[DTYPE_t, ndim=2] sticks):
     """
     For stick-breaking hdp, this returns the E[log(sticks)] 
     """
@@ -165,7 +168,7 @@ class suff_stats:
 
 class online_hdp:
     ''' hdp model using stick breaking'''
-    def __init__(self, C, T, K, D, W, eta, alpha, gamma, kappa, tau, scale=1.0,
+    def __init__(self, C, T, K, D, W, eta, alpha, gamma, kappa, tau, scale=1.0, \
                  adding_noise=False, penalty_lambda=1., l1_ratio=0.6):
         """
         this follows the convention of the HDP paper
@@ -196,7 +199,7 @@ class online_hdp:
         self.m_mu = [np.random.normal(0., 0.1, (n, T)) for n in C]
         self.m_lambda = np.random.gamma(100., 1./100., (T, W))
         self.m_eta = eta
-        self.m_Elogbeta = dirichlet_expectation(self.m_lambda)
+        self.m_Elogbeta = dirichlet_expectation(self.m_eta + self.m_lambda)
 
         self.m_penalty_lambda = penalty_lambda
         self.m_l1_ratio = l1_ratio
@@ -237,8 +240,8 @@ class online_hdp:
             old_lambda = self.m_lambda[:, word_list].copy()
             for iter in range(5):
                 sstats = suff_stats(self.m_C, self.m_T, Wt, 1) 
-                self.doc_e_step(doc, sstats, Elogsticks_1st, \
-                                word_list, unique_words, var_converge=0.0001, max_iter=5)
+                doc_score = self.doc_e_step(doc, sstats, Elogsticks_1st, \
+                            word_list, unique_words, var_converge=0.0001, max_iter=5)
 
                 self.m_lambda[:, word_list] = old_lambda + sstats.m_var_beta_ss / sstats.m_batchsize
                 self.m_Elogbeta = dirichlet_expectation(self.m_lambda)
@@ -249,7 +252,7 @@ class online_hdp:
                              unique_words, var_converge):
         args = ((doc, Elogsticks_1st, Wt, word_list, \
                  unique_words, var_converge) for doc in docs)
-        with ThreadPoolExecutor(max_workers=4) as executor:
+        with ThreadPoolExecutor(max_workers=2) as executor:
             results = executor.map(self.process_document, args)
             return results
 
@@ -354,210 +357,182 @@ class online_hdp:
         self.m_lambda_sum = self.m_lambda_sum[idx]
         self.m_Elogbeta = self.m_Elogbeta[idx,:]
         self.m_mu = [mu[:,idx] for mu in self.m_mu]
+
+    def deriv_covs(self, np.ndarray[DTYPE_t] v_i, int i, \
+                   np.ndarray[DTYPE_t] Esticks,
+                   np.ndarray[DTYPE_t, ndim=2] var_phi,
+                   np.ndarray[DTYPE_t] mu):
+        cdef double dig_sum = np.sum(v_i, 0)
+        cdef np.ndarray[DTYPE_t] deriv_covs = np.zeros(2)
+        cdef double mu_dot_var_phi = mu.dot(var_phi[i,:])
+        deriv_covs[0] = Esticks[i] * mu_dot_var_phi * v_i[1] / (v_i[0] * dig_sum + 1e-100) 
+        deriv_covs[1] = -Esticks[i] * mu_dot_var_phi / (dig_sum + 1e-100)
+        deriv_covs[0] -= mu.dot(Esticks[i+1:].dot(var_phi[i+1:,:])) / (dig_sum + 1e-100)
+        deriv_covs[1] += mu.dot(Esticks[i+1:].dot(var_phi[i+1:,:])) * v_i[0] / \
+          (v_i[1] * dig_sum + 1e-100)
+        return deriv_covs
+
+    def likelihood_v(self, np.ndarray[DTYPE_t] x, \
+                     np.ndarray[DTYPE_t, ndim=2] v, \
+                     int i, ys, double ys_scale, \
+                     np.ndarray[DTYPE_t, ndim=2] var_phi, \
+                     double phi_sum_i, double phi_cum_sum_i):
+        cdef np.ndarray[DTYPE_t, ndim=2] temp = v.copy()
+        temp[:,i] = x
+        cdef double xsum = x[0] + x[1]
+        cdef double likelihood = (phi_sum_i - x[0] + 1.) * sp.psi(x[0])
+        likelihood += (phi_cum_sum_i + self.m_alpha - x[1]) * sp.psi(x[1])
+        cdef double term = 1. + phi_sum_i + phi_cum_sum_i + self.m_alpha
+        likelihood -= (term - xsum) * sp.psi(xsum)
+        likelihood += sp.gammaln(x[0]) + sp.gammaln(x[1]) - sp.gammaln(xsum)
+        cdef np.ndarray[DTYPE_t] Esticks = expect_sticks(temp)
+        cdef np.ndarray[DTYPE_t] Epi_dot_c = Esticks.dot(var_phi)
+        cdef int y
+        cdef np.ndarray[DTYPE_t, ndim=2] mu
+        for y, mu in zip(ys, self.m_mu):
+            likelihood += mu[y,:].dot(Epi_dot_c) * ys_scale
+            exps = mu.dot(Epi_dot_c)
+            likelihood -= logsumexp(exps) * ys_scale
+        return -likelihood
+
+    def compute_dv(self, np.ndarray[DTYPE_t] x, \
+                   np.ndarray[DTYPE_t, ndim=2] v, \
+                   int i, ys, double ys_scale, \
+                   np.ndarray[DTYPE_t, ndim=2] var_phi, \
+                   double phi_sum_i, double phi_cum_sum_i):
+        cdef np.ndarray[DTYPE_t, ndim=2] temp = v.copy()
+        temp[:,i] = x
+        cdef np.ndarray[DTYPE_t] dv = np.zeros(2)
+        cdef np.ndarray[DTYPE_t] Esticks_2nd = expect_sticks(temp)
+        cdef double xsum = x[0] + x[1]
+        cdef double term = 1. + phi_sum_i + phi_cum_sum_i + self.m_alpha
+        cdef double term2 = (term - xsum) * sp.polygamma(1, xsum)
+        dv[0] = sp.polygamma(1, x[0]) * (phi_sum_i - x[0] + 1.) - term2
+        dv[1] = sp.polygamma(1, x[1]) * (phi_cum_sum_i + self.m_alpha - x[1]) - term2
+
+        cdef int y
+        cdef int C
+        cdef np.ndarray[DTYPE_t] dcovs_y
+        cdef np.ndarray[DTYPE_t] dcovs_c
+        cdef np.ndarray[DTYPE_t, ndim=2] mu
+        cdef np.ndarray[DTYPE_t] Epi_dot_c = Esticks_2nd.dot(var_phi)
+        cdef np.ndarray[DTYPE_t] exps
+        cdef np.ndarray[DTYPE_t] exps_norm
+        cdef int c
+        for y, mu, C in zip(ys, self.m_mu, self.m_C):
+            dcovs_y = self.deriv_covs(x, i, Esticks_2nd, var_phi, mu[y,:])
+            dv += dcovs_y * ys_scale
+            exps = mu.dot(Epi_dot_c)
+            exps_norm = np.exp(exps - logsumexp(exps))
+            for c in range(0, C):
+                dcovs_c = self.deriv_covs(x, i, Esticks_2nd, var_phi, mu[c,:])
+                dv -= dcovs_c * exps_norm[c] * ys_scale
+        return -dv
         
-    def _optimize_v(self, v, phi_all, var_phi, ys, ys_scale):
-        phi_sum = np.sum(phi_all[:,:self.m_K-1], 0)
-        phi_cum = np.flipud(np.sum(phi_all[:,1:], 0))
-        phi_cum_sum = np.flipud(np.cumsum(phi_cum))
-        fixed_terms = 1. + phi_sum + phi_cum_sum + self.m_alpha
-        def likelihood_v(x, v, i):
-            temp = v.copy()
-            temp[:,i] = x
-            xsum = x[0] + x[1]
-            likelihood = (phi_sum[i] - x[0] + 1.) * sp.psi(x[0])
-            likelihood += (phi_cum_sum[i] + self.m_alpha - x[1]) * sp.psi(x[1])
-            likelihood -= (fixed_terms[i] - xsum) * sp.psi(xsum)
-            likelihood += sp.gammaln(x[0]) + sp.gammaln(x[1]) - sp.gammaln(xsum)
-            Esticks = expect_sticks(temp)
-            Epi_dot_c = Esticks.dot(var_phi)
-            for y, mu in zip(ys, self.m_mu):
-                likelihood += mu[y,:].dot(Epi_dot_c) * ys_scale
-                exps = mu.dot(Epi_dot_c)
-                likelihood -= logsumexp(exps) * ys_scale
-            return likelihood
-        def deriv_covs(v_i, i, Esticks, mu):
-            dig_sum = np.sum(v_i, 0)
-            deriv_covs = np.zeros(2)
-            mu_dot_var_phi = mu.dot(var_phi[i,:])
-            deriv_covs[0] = Esticks[i] * mu_dot_var_phi * v_i[1] / (v_i[0] * dig_sum + 1e-100) 
-            deriv_covs[1] = -Esticks[i] * mu_dot_var_phi / (dig_sum + 1e-100)
-            deriv_covs[0] -= mu.dot(Esticks[i+1:].dot(var_phi[i+1:,:])) / (dig_sum + 1e-100)
-            deriv_covs[1] += mu.dot(Esticks[i+1:].dot(var_phi[i+1:,:])) * v_i[0] / \
-                        (v_i[1] * dig_sum + 1e-100)
-            return deriv_covs
-        def compute_dv(x, v, i):
-            temp = v.copy()
-            temp[:,i] = x
-            dv = np.zeros(2)
-            Esticks_2nd = expect_sticks(temp)
-            xsum = x[0] + x[1]
-            term2 = (fixed_terms[i] - xsum) * sp.polygamma(1, xsum)
-            dv[0] = sp.polygamma(1, x[0]) * (phi_sum[i] - x[0] + 1.) - term2
-            dv[1] = sp.polygamma(1, x[1]) * (phi_cum_sum[i] + self.m_alpha - x[1]) - term2
-            Epi_dot_c = Esticks_2nd.dot(var_phi)
-            for y, mu, C in zip(ys, self.m_mu, self.m_C):
-                dcovs_y = deriv_covs(x, i, Esticks_2nd, mu[y,:])
-                dv += dcovs_y * ys_scale
-                exps = mu.dot(Epi_dot_c)
-                exps_norm = np.exp(exps - logsumexp(exps))
-                for c in range(0, C):
-                    dcovs_c = deriv_covs(x, i, Esticks_2nd, mu[c,:])
-                    dv -= dcovs_c * exps_norm[c] * ys_scale
-            return dv
+    def _optimize_v(self, np.ndarray[DTYPE_t, ndim=2] v, \
+                    np.ndarray[DTYPE_t, ndim=2] phi_all, \
+                    np.ndarray[DTYPE_t, ndim=2] var_phi, \
+                    ys, double ys_scale):
+        cdef np.ndarray[DTYPE_t] phi_sum = np.sum(phi_all[:,:self.m_K-1], 0)
+        cdef np.ndarray[DTYPE_t] phi_cum = np.flipud(np.sum(phi_all[:,1:], 0))
+        cdef np.ndarray[DTYPE_t] phi_cum_sum = np.flipud(np.cumsum(phi_cum))
 
         bounds = [(1e-100, None)] * 2
+        cdef int i
         for i in range(self.m_K - 1):
-            f = lambda x: -likelihood_v(x, v, i)
-            g = lambda x: -compute_dv(x, v, i)
-            res = minimize(f, v[:,i], method='L-BFGS-B', jac=g, bounds=bounds)
+            args = (v, i, ys, ys_scale, var_phi, phi_sum[i], phi_cum_sum[i])
+            res = minimize(self.likelihood_v, v[:,i], method='L-BFGS-B', \
+                           jac=self.compute_dv, bounds=bounds, args=args)
             if res.success:
                 v[:,i] = res.x
         return v
     
-    def _optimize_var_phi(self, var_phi, Elogsticks_1st, Esticks_2nd,
-                          phi, Elogbeta, ys, ys_scale):
-        phi_dot_Elogbeta = np.dot(phi.T, Elogbeta.T)
-        def likelihood_var_phi(x, var_phi, i):
-            xnorm = np.exp(x - logsumexp(x))
-            temp = var_phi.copy()
-            temp[i,:] = xnorm
-            likelihood = xnorm.dot(phi_dot_Elogbeta[i,:])
-            likelihood += Elogsticks_1st.dot(xnorm) - xnorm.dot(np.log(xnorm + 1e-100))
-            Epi_dot_c = Esticks_2nd.dot(temp)
-            for y, mu in zip(ys, self.m_mu):
-                likelihood += mu[y,:].dot(Epi_dot_c) * ys_scale
-                exps = mu.dot(Epi_dot_c)
-                likelihood -= logsumexp(exps) * ys_scale
-            return likelihood
-        def deriv_helper(xnorm, c):
-            res = c * xnorm - xnorm * c.dot(xnorm)
-            return res
-        def compute_dvar_phi(x, var_phi, i):
-            xnorm = np.exp(x - logsumexp(x))
-            temp = var_phi.copy()
-            temp[i,:] = xnorm
-            dvar_phi = deriv_helper(xnorm, phi_dot_Elogbeta[i,:])
-            dvar_phi += deriv_helper(xnorm, Elogsticks_1st)
-            dvar_phi -= deriv_helper(xnorm, np.ones(xnorm.shape))
-            dvar_phi -= deriv_helper(xnorm, np.log(xnorm + 1e-100))
-            for y, mu, C in zip(ys, self.m_mu, self.m_C):
-                dvar_phi += deriv_helper(xnorm, Esticks_2nd[i] * mu[y,:]) * ys_scale
-                Epi_dot_c = Esticks_2nd.dot(temp)
-                exps = mu.dot(Epi_dot_c)
-                exps_norm = np.exp(exps - logsumexp(exps))
-                for c in range(0, C):
-                    term = Esticks_2nd[i] * mu[c,:] * exps_norm[c]
-                    dvar_phi -= deriv_helper(xnorm, term) * ys_scale
-            return dvar_phi
+    def likelihood_var_phi(self, np.ndarray[DTYPE_t] x, \
+                           np.ndarray[DTYPE_t, ndim=2] var_phi, \
+                           int i, ys, double ys_scale, \
+                           np.ndarray[DTYPE_t] phi_dot_Elogbeta_i, \
+                           np.ndarray[DTYPE_t] Elogsticks_1st, \
+                           np.ndarray[DTYPE_t] Esticks_2nd):
+        cdef np.ndarray[DTYPE_t] xnorm = np.exp(x - logsumexp(x))
+        cdef np.ndarray[DTYPE_t, ndim=2] temp = var_phi.copy()
+        temp[i,:] = xnorm
+        cdef double likelihood = xnorm.dot(phi_dot_Elogbeta_i)
+        likelihood += Elogsticks_1st.dot(xnorm) - xnorm.dot(np.log(xnorm + 1e-100))
+        cdef np.ndarray[DTYPE_t] Epi_dot_c = Esticks_2nd.dot(temp)
+        cdef np.ndarray[DTYPE_t] exps
+        cdef np.ndarray[DTYPE_t, ndim=2] mu
+        cdef int y
+        for y, mu in zip(ys, self.m_mu):
+            likelihood += mu[y,:].dot(Epi_dot_c) * ys_scale
+            exps = mu.dot(Epi_dot_c)
+            likelihood -= logsumexp(exps)
+        return -likelihood
 
+    def compute_dvar_phi(self, np.ndarray[DTYPE_t] x, \
+                         np.ndarray[DTYPE_t, ndim=2] var_phi, \
+                         int i, ys, double ys_scale, \
+                         np.ndarray[DTYPE_t] phi_dot_Elogbeta_i, \
+                         np.ndarray[DTYPE_t] Elogsticks_1st, \
+                         np.ndarray[DTYPE_t] Esticks_2nd):
+        deriv_helper = lambda xnorm, c: c * xnorm - xnorm * c.dot(xnorm)
+        cdef np.ndarray[DTYPE_t] xnorm = np.exp(x - logsumexp(x))
+        cdef np.ndarray[DTYPE_t, ndim=2] temp = var_phi.copy()
+        temp[i,:] = xnorm
+        cdef np.ndarray[DTYPE_t] dvar_phi = deriv_helper(xnorm, phi_dot_Elogbeta_i)
+        dvar_phi += deriv_helper(xnorm, Elogsticks_1st)
+        dvar_phi -= deriv_helper(xnorm, np.ones(len(xnorm)))
+        dvar_phi -= deriv_helper(xnorm, np.log(xnorm + 1e-100))
+        cdef np.ndarray[DTYPE_t] Epi_dot_c
+        cdef np.ndarray[DTYPE_t] exps
+        cdef np.ndarray[DTYPE_t] exps_norm
+        cdef int c
+        cdef np.ndarray[DTYPE_t] term
+        cdef np.ndarray[DTYPE_t, ndim=2] mu
+        cdef int y
+        cdef int C
+        for y, mu, C in zip(ys, self.m_mu, self.m_C):
+            dvar_phi += deriv_helper(xnorm, Esticks_2nd[i] * mu[y,:]) * ys_scale
+            Epi_dot_c = Esticks_2nd.dot(temp)
+            exps = mu.dot(Epi_dot_c)
+            exps_norm = np.exp(exps - logsumexp(exps))
+            for c in range(0, C):
+                term = Esticks_2nd[i] * mu[c,:] * exps_norm[c]
+                dvar_phi -= deriv_helper(xnorm, term) * ys_scale
+        return -dvar_phi
+
+    def _optimize_var_phi(self, np.ndarray[DTYPE_t, ndim=2] var_phi, \
+                          np.ndarray[DTYPE_t] Elogsticks_1st, \
+                          np.ndarray[DTYPE_t, ndim=2] phi, \
+                          np.ndarray[DTYPE_t, ndim=2] Elogbeta, \
+                          np.ndarray[DTYPE_t, ndim=2] v, \
+                          ys, double ys_scale):
+        cdef np.ndarray[DTYPE_t] Esticks_2nd = expect_sticks(v)
+        cdef np.ndarray[DTYPE_t, ndim=2] phi_dot_Elogbeta = np.dot(phi.T, Elogbeta.T)        
+        cdef int i
         for i in range(self.m_K):
-            f = lambda x: -likelihood_var_phi(x, var_phi, i)
-            g = lambda x: -compute_dvar_phi(x, var_phi, i)
-            res = minimize(f, var_phi[i,:], jac=g, method='L-BFGS-B')        
+            args = (var_phi, i, ys, ys_scale, phi_dot_Elogbeta[i,:], \
+                    Elogsticks_1st, Esticks_2nd)
+            res = minimize(self.likelihood_var_phi, var_phi[i,:], \
+                           jac=self.compute_dvar_phi, \
+                           method='L-BFGS-B', args=args)        
             if res.success:
                 x = res.x
                 var_phi[i,:] = np.exp(x - logsumexp(x))
         return var_phi
 
-    def _deriv_mu(self, mu, C, Epi_dot_c, y, ys_scale):
-        dmu = np.zeros(mu.shape)
-        exps = mu.dot(Epi_dot_c)
-        exps_norm = np.exp(exps - logsumexp(exps))
-        dmu[y,:] += Epi_dot_c * ys_scale
+    def _deriv_mu(self, np.ndarray[DTYPE_t, ndim=2] mu, int C,
+                  np.ndarray[DTYPE_t] Epi_dot_c, int y, double ys_scale):
+        cdef np.ndarray[DTYPE_t, ndim=2] dmu = np.zeros((C, self.m_T))
+        cdef np.ndarray[DTYPE_t] exps = mu.dot(Epi_dot_c)
+        cdef np.ndarray[DTYPE_t] exps_norm = np.exp(exps - logsumexp(exps))
+        dmu[y,:] += Epi_dot_c
+        cdef int c
         for c in range(0, C):
             dmu[c,:] -= Epi_dot_c * exps_norm[c] * ys_scale
         return dmu
 
-    # def doc_e_step(self, doc, ss, Elogsticks_1st, \
-    #                word_list, unique_words, var_converge, \
-    #                max_iter=100):
-    #     """
-    #     e step for a single doc
-    #     """
-
-    #     batchids = [unique_words[id] for id in doc.words]
-    #     ys = doc.ys
-
-    #     Elogbeta_doc = self.m_Elogbeta[:, doc.words] 
-    #     ## very similar to the hdp equations
-    #     v = np.zeros((2, self.m_K-1))  
-    #     v[0] = 1.0
-    #     v[1] = self.m_alpha
-
-    #     # The following line is of no use.
-    #     Elogsticks_2nd = expect_log_sticks(v)
-
-    #     # back to the uniform
-    #     phi = np.ones((len(doc.words), self.m_K)) * 1.0/self.m_K
-
-    #     likelihood = 0.0
-    #     old_likelihood = -1e100
-    #     converge = 1.0 
-        
-    #     iter = 0
-    #     # not yet support second level optimization yet, to be done in the future
-    #     while iter < max_iter and (converge < 0.0 or converge > var_converge):
-    #         ### update variational parameters
-    #         # var_phi 
-    #         if iter < 3:
-    #             var_phi = np.dot(phi.T,  (Elogbeta_doc * doc.counts).T)
-    #             var_phi = log_normalize(var_phi)
-    #         else:
-    #             var_phi = np.dot(phi.T,  (Elogbeta_doc * doc.counts).T) + Elogsticks_1st
-    #             var_phi = log_normalize(var_phi)
-            
-    #         # phi
-    #         if iter < 3:
-    #             phi = np.dot(var_phi, Elogbeta_doc).T
-    #             phi = log_normalize(phi)
-    #         else:
-    #             phi = np.dot(var_phi, Elogbeta_doc).T + Elogsticks_2nd
-    #             phi = log_normalize(phi)
-
-    #         # v
-    #         phi_all = phi * np.array(doc.counts)[:,np.newaxis]
-    #         v[0] = 1.0 + np.sum(phi_all[:,:self.m_K-1], 0)
-    #         phi_cum = np.flipud(np.sum(phi_all[:,1:], 0))
-    #         v[1] = self.m_alpha + np.flipud(np.cumsum(phi_cum))
-    #         Elogsticks_2nd = expect_log_sticks(v)
-
-    #         likelihood = 0.0
-    #         # compute likelihood
-    #         # var_phi part/ C in john's notation
-    #         likelihood += np.sum((Elogsticks_1st - np.log(var_phi)) * var_phi)
-
-    #         # v part/ v in john's notation, john's beta is alpha here
-    #         log_alpha = np.log(self.m_alpha)
-    #         likelihood += (self.m_K-1) * log_alpha
-    #         dig_sum = sp.psi(np.sum(v, 0))
-    #         likelihood += np.sum((np.array([1.0, self.m_alpha])[:,np.newaxis]-v) * (sp.psi(v)-dig_sum))
-    #         likelihood -= np.sum(sp.gammaln(np.sum(v, 0))) - np.sum(sp.gammaln(v))
-
-    #         # Z part 
-    #         likelihood += np.sum((Elogsticks_2nd - np.log(phi)) * phi)
-
-    #         # X part, the data part
-    #         likelihood += np.sum(phi.T * np.dot(var_phi, Elogbeta_doc * doc.counts))
-
-    #         converge = (likelihood - old_likelihood)/abs(old_likelihood)
-    #         old_likelihood = likelihood
-
-    #         if converge < -0.000001:
-    #             print "warning, likelihood is decreasing!"
-            
-    #         iter += 1
-            
-    #     # update the suff_stat ss 
-    #     # this time it only contains information from one doc
-    #     ss.m_var_sticks_ss += np.sum(var_phi, 0)   
-    #     ss.m_var_beta_ss[:, batchids] += np.dot(var_phi.T, phi.T * doc.counts)
-    #     Epi_dot_c = expect_sticks(v).dot(var_phi)
-    #     ss.m_dmu_ss = [dmu + self._deriv_mu(mu, C, Epi_dot_c, y, 1.) \
-    #                    for dmu, y, mu, C in zip(ss.m_dmu_ss, ys, self.m_mu, self.m_C)]
-
-    #     return(likelihood)
-
-    def doc_e_step(self, doc, ss, Elogsticks_1st, \
+    def doc_e_step(self, doc, ss, \
+                   np.ndarray[DTYPE_t] Elogsticks_1st, \
                    word_list, unique_words, var_converge, \
                    max_iter=20):
         """
@@ -565,39 +540,39 @@ class online_hdp:
         """
         batchids = [unique_words[id] for id in doc.words]
         ys = doc.ys
-        ys_scale = doc.total / len(self.m_C)
+        cdef double ys_scale = doc.total / len(self.m_C)
 
-        Elogbeta_doc = self.m_Elogbeta[:, doc.words]
+        cdef np.ndarray[DTYPE_t, ndim=2] Elogbeta_doc = self.m_Elogbeta[:, doc.words]
         ## very similar to the hdp equations
-        v = np.zeros((2, self.m_K-1))  
+        cdef np.ndarray[DTYPE_t, ndim=2] v = np.zeros((2, self.m_K-1))  
         v[0] = np.random.gamma(100., 1./100., self.m_K - 1)
         v[1] = range(self.m_K - 1, 0, -1)
         
         # The following line is of no use.
-        Elogsticks_2nd = expect_log_sticks(v)
-        Esticks_2nd = expect_sticks(v)
+        cdef np.ndarray[DTYPE_t] Elogsticks_2nd = expect_log_sticks(v)
 
         # back to the uniform
-        phi = np.random.dirichlet(np.ones(self.m_K) * 100. / self.m_K, len(doc.words))
-        var_phi = np.random.dirichlet(np.ones(self.m_T) * 100. / self.m_T, self.m_K)
-        Epi_dot_c = Esticks_2nd.dot(var_phi)
+        cdef np.ndarray[DTYPE_t, ndim=2] var_phi = np.random.dirichlet(np.ones(self.m_T) * 100., self.m_K)
+        cdef np.ndarray[DTYPE_t, ndim=2] phi = np.random.dirichlet(np.ones(self.m_K) * 100., len(doc.words))
+        cdef np.ndarray[DTYPE_t] Esticks_2nd = expect_sticks(v)
+        cdef np.ndarray[DTYPE_t] Epi_dot_c = Esticks_2nd.dot(var_phi)
+        cdef np.ndarray[DTYPE_t] old_Epi_dot_c
 
-        likelihood = 0.0
-
-        iter = 0
+        cdef int iter = 0
         # not yet support second level optimization yet, to be done in the future
         while iter < max_iter:
             ### update variational parameters
             # var_phi
             # var_phi = np.dot(phi.T, (Elogbeta_doc * doc.counts).T) + Elogsticks_1st
             # var_phi = log_normalize(var_phi)
-            var_phi = self._optimize_var_phi(var_phi, Elogsticks_1st, Esticks_2nd, \
-                                             phi, Elogbeta_doc * doc.counts, ys, ys_scale)
+            var_phi = self._optimize_var_phi(var_phi, Elogsticks_1st, \
+                                             phi, Elogbeta_doc * doc.counts, v, \
+                                             ys, ys_scale)
                                 
             # phi
             phi = np.dot(var_phi, Elogbeta_doc).T + Elogsticks_2nd
             phi = log_normalize(phi)
-                
+
             # v
             phi_all = phi * np.array(doc.counts)[:,np.newaxis]
             # v[0] = 1.0 + np.sum(phi_all[:,:self.m_K-1], 0)
@@ -614,7 +589,7 @@ class online_hdp:
             if np.mean(abs(Epi_dot_c - old_Epi_dot_c)) < meanchangethresh:
                 break
 
-        likelihood = 0.0
+        cdef double likelihood = 0.0
         # compute likelihood
         # var_phi part/ C in john's notation
         likelihood += np.sum((Elogsticks_1st - np.log(var_phi + 1e-100)) * var_phi)
@@ -623,11 +598,11 @@ class online_hdp:
         phi_sum = np.sum(phi_all[:,:self.m_K-1], 0)
         phi_cum = np.flipud(np.sum(phi_all[:,1:], 0))
         phi_cum_sum = np.flipud(np.cumsum(phi_cum))
-        dig_sum = v.sum(0)
+        fixed_terms = 1. + phi_sum + phi_cum_sum + self.m_alpha
         likelihood = np.sum((phi_sum - v[0] + 1.) * sp.psi(v[0]))
         likelihood += np.sum((phi_cum_sum + self.m_alpha - v[1]) * sp.psi(v[1]))
-        likelihood -= np.sum((1. + phi_sum + phi_cum_sum + self.m_alpha - dig_sum) * sp.psi(dig_sum))
-        likelihood += np.sum(sp.gammaln(v[0]) + sp.gammaln(v[1]) - sp.gammaln(dig_sum))
+        likelihood -= np.sum((fixed_terms - v[0] - v[1]) * sp.psi(v[0] + v[1]))
+        likelihood += np.sum(sp.gammaln(v[0]) + sp.gammaln(v[1]) - sp.gammaln(v[0] + v[1]))
 
         # Z part 
         likelihood += np.sum((Elogsticks_2nd - np.log(phi + 1e-100)) * phi)
@@ -636,11 +611,14 @@ class online_hdp:
         likelihood += np.sum(phi.T * np.dot(var_phi, Elogbeta_doc * doc.counts))
 
         # Y part
+        cdef int y
+        cdef np.ndarray[DTYPE_t, ndim=2] mu
+        cdef np.ndarray[DTYPE_t] exps
         for y, mu in zip(ys, self.m_mu):
             likelihood += mu[y,:].dot(Epi_dot_c) * ys_scale
             exps = mu.dot(Epi_dot_c)
             likelihood -= logsumexp(exps) * ys_scale
-        
+
         # update the suff_stat ss 
         # this time it only contains information from one doc
         ss.m_var_sticks_ss += np.sum(var_phi, 0)   
@@ -662,12 +640,10 @@ class online_hdp:
         
         # The following line is of no use.
         Elogsticks_2nd = expect_log_sticks(v)
-        Esticks_2nd = expect_sticks(v)
 
         # back to the uniform
-        phi = np.random.dirichlet(np.ones(self.m_K) * 100. / self.m_K, len(doc.words))
-        var_phi = np.random.dirichlet(np.ones(self.m_T) * 100. / self.m_T, self.m_K)
-        Epi_dot_c = Esticks_2nd.dot(var_phi)
+        var_phi = np.random.dirichlet(np.ones(self.m_T) * 100., self.m_K)
+        phi = np.random.dirichlet(np.ones(self.m_K) * 100., len(doc.words))
         
         likelihood = 0.0
         old_likelihood = -1e100
@@ -677,11 +653,11 @@ class online_hdp:
         # not yet support second level optimization yet, to be done in the future
         while iter < max_iter and (converge < 0.0 or converge > var_converge):
             ### update variational parameters
-            # var_phi 
-            var_phi = np.dot(phi.T,  (Elogbeta_doc * doc.counts).T) + Elogsticks_1st
+            # var_phi
+            var_phi = np.dot(phi.T, (Elogbeta_doc * doc.counts).T) + Elogsticks_1st
             var_phi = log_normalize(var_phi)
                                 
-           # phi
+            # phi
             phi = np.dot(var_phi, Elogbeta_doc).T + Elogsticks_2nd
             phi = log_normalize(phi)
 
@@ -691,9 +667,6 @@ class online_hdp:
             phi_cum = np.flipud(np.sum(phi_all[:,1:], 0))
             v[1] = self.m_alpha + np.flipud(np.cumsum(phi_cum))
             Elogsticks_2nd = expect_log_sticks(v)
-
-            Esticks_2nd = expect_sticks(v)
-            Epi_dot_c = Esticks_2nd.dot(var_phi)
 
             likelihood = 0.0
             # compute likelihood
@@ -715,9 +688,11 @@ class online_hdp:
 
             converge = (likelihood - old_likelihood)/abs(old_likelihood)
             old_likelihood = likelihood
-            
+
             iter += 1
 
+        Esticks_2nd = expect_sticks(v)
+        Epi_dot_c = Esticks_2nd.dot(var_phi)        
         return(likelihood, Epi_dot_c)
 
 
@@ -756,7 +731,7 @@ class online_hdp:
             self.optimal_ordering();
 
         ## update top level sticks 
-        self.m_var_sticks[0] = self.m_varphi_ss[:self.m_T-1] + 1.0
+        self.m_var_sticks[0] = self.m_varphi_ss[:self.m_T-1]  + 1.0
         var_phi_sum = np.flipud(self.m_varphi_ss[1:])
         self.m_var_sticks[1] = np.flipud(np.cumsum(var_phi_sum)) + self.m_gamma
 
@@ -805,7 +780,7 @@ class online_hdp:
         for i in range(0, self.m_T-1):
             alpha[i] = sticks[i] * left
             left = left - alpha[i]
-        alpha[self.m_T-1] = left
+        alpha[self.m_T-1] = left      
         alpha = alpha * self.m_alpha
         #alpha = alpha * self.m_gamma
         

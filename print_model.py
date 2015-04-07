@@ -1,7 +1,7 @@
 import os
 from corpus import *
 import onlinehdp
-import pickle
+import cPickle
 import random, time
 from optparse import OptionParser
 from glob import glob
@@ -81,14 +81,10 @@ def run_online_hdp():
   options = parse_args()
 
   # Set the random seed.
-  if options.seq_mode:
-    train_file = open(options.data_path)
-  else:
+  if not options.seq_mode:
     train_filenames = glob(options.data_path)
     train_filenames.sort()
-    num_train_splits = len(train_filenames)
     # This is used to determine when we reload some another split.
-    num_of_doc_each_split = options.D/num_train_splits 
     # Pick a random split to start
     # cur_chosen_split = int(random.random() * num_train_splits)
     cur_chosen_split = 0 # deterministic choice
@@ -128,92 +124,8 @@ def run_online_hdp():
   print("creating online hdp instance.")
   C = options.C.split(',')
   C = [int(i) for i in C]
-  ohdp = onlinehdp.online_hdp(C, options.T, options.K, options.D, options.W, 
-                              options.eta, options.alpha, options.gamma,
-                              options.kappa, options.tau, options.scale,
-                              options.adding_noise)
-  if options.new_init:
-    ohdp.new_init(c_train)
-
-  print("setting up counters and log files.")
-
-  iter = 0
-  save_lag_counter = 0
-  total_time = 0.0
-  total_doc_count = 0
-  split_doc_count = 0
-  doc_seen = set()
-  log_file = open("%s/log.dat" % result_directory, "w") 
-  log_file.write("iteration time doc.count score word.count unseen.score unseen.word.count\n")
-
-  if options.test_data_path is not None:
-    test_log_file = open("%s/test-log.dat" % result_directory, "w") 
-    test_log_file.write("iteration time doc.count score word.count score.split word.count.split\n")
-
-  print("starting online variational inference.")
-  while True:
-    iter += 1
-    if iter % 10 == 1:
-      print("iteration: %09d" % iter)
-    t0 = time.clock()
-
-    # Sample the documents.
-    batchsize = options.batchsize
-    if options.seq_mode:
-      c = read_stream_data(train_file, batchsize) 
-      batchsize = c.num_docs
-      if batchsize == 0:
-        break
-      docs = c.docs
-      unseen_ids = range(batchsize)
-    else:
-      ids = random.sample(range(c_train.num_docs), batchsize)
-      docs = [c_train.docs[id] for id in ids]
-      # Record the seen docs.
-      unseen_ids = set([i for (i, id) in enumerate(ids) if (cur_chosen_split, id) not in doc_seen])
-      if len(unseen_ids) != 0:
-        doc_seen.update([(cur_chosen_split, id) for id in ids]) 
-
-    total_doc_count += batchsize
-    split_doc_count += batchsize
-
-    # Do online inference and evaluate on the fly dataset
-    (score, count, unseen_score, unseen_count) = ohdp.process_documents(docs, options.var_converge, unseen_ids)
-    total_time += time.clock() - t0
-    log_file.write("%d %d %d %.5f %d %.5f %d\n" % (iter, total_time,
-                    total_doc_count, score, count, unseen_score, unseen_count))
-    log_file.flush()
-
-    # Evaluate on the test data: fixed and folds
-    if total_doc_count % options.save_lag == 0:
-      if not options.fixed_lag and save_lag_counter < 10:
-        save_lag_counter += 1
-        options.save_lag = options.save_lag * 2
-
-      # Save the model.
-      ohdp.save_topics('%s/doc_count-%d.topics' %  (result_directory, total_doc_count))
-      pickle.dump(ohdp, open('%s/doc_count-%d.model' % (result_directory, total_doc_count), 'wb'), -1)
-
-    # read another split.
-    if not options.seq_mode:
-      if split_doc_count > num_of_doc_each_split * options.pass_ratio and num_train_splits > 1:
-        print("Loading a new split from the training data")
-        split_doc_count = 0
-        # cur_chosen_split = int(random.random() * num_train_splits)
-        cur_chosen_split = (cur_chosen_split + 1) % num_train_splits
-        cur_train_filename = train_filenames[cur_chosen_split]
-        c_train = read_data(cur_train_filename)
-
-    if (options.max_iter != -1 and iter >= options.max_iter) or (options.max_time !=-1 and total_time > options.max_time):
-      break
-  log_file.close()
-
-  print("Saving the final model and topics.")
-  ohdp.save_topics('%s/final.topics' %  result_directory)
-  pickle.dump(ohdp, open('%s/final.model' % result_directory, 'wb'), -1)
-
-  if options.seq_mode:
-    train_file.close()
+  ohdp = cPickle.load(open('%s/final.model' % result_directory))
+  ohdp.print_model()
 
   # Makeing final predictions.
   if options.test_data_path is not None:
