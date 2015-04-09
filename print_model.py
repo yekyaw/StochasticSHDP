@@ -1,8 +1,7 @@
 import os
 from corpus import *
 import onlinehdp
-import cPickle
-import random, time
+import pickle
 from optparse import OptionParser
 from glob import glob
 from sklearn.metrics import confusion_matrix, classification_report, accuracy_score
@@ -124,7 +123,7 @@ def run_online_hdp():
   print("creating online hdp instance.")
   C = options.C.split(',')
   C = [int(i) for i in C]
-  ohdp = cPickle.load(open('%s/final.model' % result_directory))
+  ohdp = pickle.load(open('%s/final.model' % result_directory, 'rb'))
   ohdp.print_model()
 
   # Makeing final predictions.

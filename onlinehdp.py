@@ -6,8 +6,9 @@ import numpy as np
 import scipy.special as sp
 from scipy.optimize import minimize
 from scipy.misc import logsumexp
-import random
-from concurrent.futures import ThreadPoolExecutor
+import random, time
+from concurrent.futures import ProcessPoolExecutor
+from multiprocessing import cpu_count
 
 meanchangethresh = 0.001
 min_adding_noise_point = 10
@@ -15,6 +16,17 @@ min_adding_noise_ratio = 1
 mu0 = 0.3
 rhot_bound = 0.0
 burn_in_samples = 5
+num_cores = cpu_count()
+
+def split_chunks(l, n):
+    """ Yield successive n-sized chunks from l.
+    """
+    size = int(len(l) / n)
+    left = l
+    while(len(left) > 0):
+        chunk = left[:size]
+        left = left[size:]
+        yield chunk
 
 def log_normalize(x):
     lognorm = np.tile(logsumexp(x, axis=1), (x.shape[1], 1)).T
@@ -245,22 +257,30 @@ class online_hdp:
 
         self.m_lambda_sum = np.sum(self.m_lambda, axis=1)
 
-    def do_e_step_concurrent(self, docs, Elogsticks_1st, Wt, word_list, \
-                             unique_words, var_converge):
-        args = ((doc, Elogsticks_1st, Wt, word_list, \
-                 unique_words, var_converge) for doc in docs)
-        with ThreadPoolExecutor(max_workers=4) as executor:
-            results = executor.map(self.process_document, args)
+    def do_e_step_concurrent(self, docs, Wt, word_list, unique_words, \
+                             var_converge, num_workers=num_cores):
+        chunks = split_chunks(docs, num_workers)
+        Elogsticks_1st = expect_log_sticks(self.m_var_sticks) # global sticks
+        args = ((chunk, Elogsticks_1st, Wt, word_list, \
+                 unique_words, var_converge) for chunk in chunks)
+        with ProcessPoolExecutor(max_workers=num_workers) as executor:
+            results = executor.map(self.process_chunk, args)
             return results
 
-    def process_document(self, arg):
-        (doc, Elogsticks_1st, Wt, word_list, unique_words, var_converge) = arg
-        doc_ss = suff_stats(self.m_C, self.m_T, Wt, 1)
-        doc_score = self.doc_e_step(doc, doc_ss, Elogsticks_1st, \
+    def process_chunk(self, arg):
+        (chunk, Elogsticks_1st, Wt, word_list, unique_words, var_converge) = arg
+        ss = suff_stats(self.m_C, self.m_T, Wt, len(chunk))
+        score = 0.0
+        count = 0
+        for i, doc in enumerate(chunk):
+            doc_score = self.doc_e_step(doc, ss, Elogsticks_1st, \
                         word_list, unique_words, var_converge)
-        return (doc_score, doc_ss, doc.total)
+            count += doc.total
+            score += doc_score
+        return (score, ss, count)
 
-    def process_documents(self, docs, var_converge, unseen_ids=[], update=True, opt_o=False):
+    def process_documents(self, docs, var_converge, update=True, \
+                          opt_o=False, num_workers=num_cores):
         # Find the unique words in this mini-batch of documents...
         self.m_num_docs_parsed += len(docs)
         adding_noise = False
@@ -294,29 +314,22 @@ class online_hdp:
             sp.psi(self.m_eta + self.m_lambda[:, word_list]) - \
             sp.psi(self.m_W*self.m_eta + self.m_lambda_sum[:, np.newaxis])
 
-        
-        Elogsticks_1st = expect_log_sticks(self.m_var_sticks) # global sticks
-
         # run variational inference on some new docs
         score = 0.0
         count = 0
-        unseen_score = 0.0
-        unseen_count = 0
-        ss = suff_stats(self.m_C, self.m_T, Wt, len(docs))
+        ss = suff_stats(self.m_C, self.m_T, Wt, 0)
 
-        results = self.do_e_step_concurrent(docs, Elogsticks_1st, Wt, word_list, \
+        results = self.do_e_step_concurrent(docs, Wt, word_list, \
                                             unique_words, var_converge)
         for i, result in enumerate(results):
-            (doc_score, doc_ss, num_words) = result
-            ss.m_batchsize += doc_ss.m_batchsize
-            ss.m_var_sticks_ss += doc_ss.m_var_sticks_ss
-            ss.m_var_beta_ss += doc_ss.m_var_beta_ss
-            ss.m_dmu_ss += doc_ss.m_dmu_ss
-            count += num_words
-            score += doc_score
-            if i in unseen_ids:
-              unseen_score += doc_score
-              unseen_count += num_words
+            (chunk_score, chunk_ss, chunk_count) = result
+            ss.m_batchsize += chunk_ss.m_batchsize
+            ss.m_var_sticks_ss += chunk_ss.m_var_sticks_ss
+            ss.m_var_beta_ss += chunk_ss.m_var_beta_ss
+            ss.m_dmu_ss = [dmu + chunk_dmu for dmu, chunk_dmu in \
+                           zip(ss.m_dmu_ss, chunk_ss.m_dmu_ss)]
+            score += chunk_score
+            count += chunk_count
 
         if adding_noise:
             # add noise to the ss
@@ -342,7 +355,7 @@ class online_hdp:
         if update:
             self.update_lambda(ss, word_list, opt_o)
     
-        return (score, count, unseen_score, unseen_count) 
+        return (score, count) 
 
     def optimal_ordering(self):
         """
@@ -565,7 +578,7 @@ class online_hdp:
         """
         batchids = [unique_words[id] for id in doc.words]
         ys = doc.ys
-        ys_scale = doc.total / len(self.m_C)
+        ys_scale = 4.
 
         Elogbeta_doc = self.m_Elogbeta[:, doc.words]
         ## very similar to the hdp equations

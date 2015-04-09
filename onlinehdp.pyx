@@ -8,7 +8,8 @@ import scipy.special as sp
 from scipy.optimize import minimize
 from scipy.misc import logsumexp
 import random, time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor
+from multiprocessing import cpu_count
 
 DTYPE = np.longdouble
 ctypedef np.double_t DTYPE_t
@@ -19,6 +20,17 @@ min_adding_noise_ratio = 1
 mu0 = 0.3
 rhot_bound = 0.0
 burn_in_samples = 5
+num_cores = cpu_count()
+
+def split_chunks(l, n):
+    """ Yield successive n-sized chunks from l.
+    """
+    size = int(len(l) / n)
+    left = l
+    while(len(left) > 0):
+        chunk = left[:size]
+        left = left[size:]
+        yield chunk
 
 def log_normalize(x):
     lognorm = np.tile(logsumexp(x, axis=1), (x.shape[1], 1)).T
@@ -39,6 +51,7 @@ def expect_sticks(sticks):
 
     n = len(sticks[0]) + 1
     Esticks = np.zeros(n)
+    Esticks[-1] = 1.
     Esticks[0:n-1] = E0_W
     Esticks[1:] = Esticks[1:] * np.cumprod(E1_W)
     return Esticks 
@@ -248,20 +261,27 @@ class online_hdp:
 
         self.m_lambda_sum = np.sum(self.m_lambda, axis=1)
 
-    def do_e_step_concurrent(self, docs, Elogsticks_1st, Wt, word_list, \
-                             unique_words, var_converge):
-        args = ((doc, Elogsticks_1st, Wt, word_list, \
-                 unique_words, var_converge) for doc in docs)
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            results = executor.map(self.process_document, args)
+    def do_e_step_concurrent(self, docs, Wt, word_list, unique_words, \
+                             var_converge, num_workers=num_cores):
+        chunks = split_chunks(docs, num_workers)
+        Elogsticks_1st = expect_log_sticks(self.m_var_sticks) # global sticks
+        args = ((chunk, Elogsticks_1st, Wt, word_list, \
+                 unique_words, var_converge) for chunk in chunks)
+        with ProcessPoolExecutor(max_workers=num_workers) as executor:
+            results = executor.map(self.process_chunk, args)
             return results
 
-    def process_document(self, arg):
-        (doc, Elogsticks_1st, Wt, word_list, unique_words, var_converge) = arg
-        doc_ss = suff_stats(self.m_C, self.m_T, Wt, 1)
-        doc_score = self.doc_e_step(doc, doc_ss, Elogsticks_1st, \
+    def process_chunk(self, arg):
+        (chunk, Elogsticks_1st, Wt, word_list, unique_words, var_converge) = arg
+        ss = suff_stats(self.m_C, self.m_T, Wt, len(chunk))
+        score = 0.0
+        count = 0
+        for i, doc in enumerate(chunk):
+            doc_score = self.doc_e_step(doc, ss, Elogsticks_1st, \
                         word_list, unique_words, var_converge)
-        return (doc_score, doc_ss, doc.total)
+            count += doc.total
+            score += doc_score
+        return (score, ss, count)
 
     def process_documents(self, docs, var_converge, unseen_ids=[], update=True, opt_o=False):
         # Find the unique words in this mini-batch of documents...
@@ -303,23 +323,19 @@ class online_hdp:
         # run variational inference on some new docs
         score = 0.0
         count = 0
-        unseen_score = 0.0
-        unseen_count = 0
-        ss = suff_stats(self.m_C, self.m_T, Wt, len(docs))
+        ss = suff_stats(self.m_C, self.m_T, Wt, 0)
 
-        results = self.do_e_step_concurrent(docs, Elogsticks_1st, Wt, word_list, \
+        results = self.do_e_step_concurrent(docs, Wt, word_list, \
                                             unique_words, var_converge)
         for i, result in enumerate(results):
-            (doc_score, doc_ss, num_words) = result
-            ss.m_batchsize += doc_ss.m_batchsize
-            ss.m_var_sticks_ss += doc_ss.m_var_sticks_ss
-            ss.m_var_beta_ss += doc_ss.m_var_beta_ss
-            ss.m_dmu_ss += doc_ss.m_dmu_ss
-            count += num_words
-            score += doc_score
-            if i in unseen_ids:
-              unseen_score += doc_score
-              unseen_count += num_words
+            (chunk_score, chunk_ss, chunk_count) = result
+            ss.m_batchsize += chunk_ss.m_batchsize
+            ss.m_var_sticks_ss += chunk_ss.m_var_sticks_ss
+            ss.m_var_beta_ss += chunk_ss.m_var_beta_ss
+            ss.m_dmu_ss = [dmu + chunk_dmu for dmu, chunk_dmu in \
+                           zip(ss.m_dmu_ss, chunk_ss.m_dmu_ss)]
+            score += chunk_score
+            count += chunk_count
 
         if adding_noise:
             # add noise to the ss
@@ -345,7 +361,7 @@ class online_hdp:
         if update:
             self.update_lambda(ss, word_list, opt_o)
     
-        return (score, count, unseen_score, unseen_count) 
+        return (score, count) 
 
     def optimal_ordering(self):
         """
@@ -362,9 +378,9 @@ class online_hdp:
                    np.ndarray[DTYPE_t] Esticks,
                    np.ndarray[DTYPE_t, ndim=2] var_phi,
                    np.ndarray[DTYPE_t] mu):
-        cdef double dig_sum = np.sum(v_i, 0)
+        cdef DTYPE_t dig_sum = np.sum(v_i, 0)
         cdef np.ndarray[DTYPE_t] deriv_covs = np.zeros(2)
-        cdef double mu_dot_var_phi = mu.dot(var_phi[i,:])
+        cdef DTYPE_t mu_dot_var_phi = mu.dot(var_phi[i,:])
         deriv_covs[0] = Esticks[i] * mu_dot_var_phi * v_i[1] / (v_i[0] * dig_sum + 1e-100) 
         deriv_covs[1] = -Esticks[i] * mu_dot_var_phi / (dig_sum + 1e-100)
         deriv_covs[0] -= mu.dot(Esticks[i+1:].dot(var_phi[i+1:,:])) / (dig_sum + 1e-100)
@@ -374,15 +390,15 @@ class online_hdp:
 
     def likelihood_v(self, np.ndarray[DTYPE_t] x, \
                      np.ndarray[DTYPE_t, ndim=2] v, \
-                     int i, ys, double ys_scale, \
+                     int i, ys, DTYPE_t ys_scale, \
                      np.ndarray[DTYPE_t, ndim=2] var_phi, \
-                     double phi_sum_i, double phi_cum_sum_i):
+                     DTYPE_t phi_sum_i, DTYPE_t phi_cum_sum_i):
         cdef np.ndarray[DTYPE_t, ndim=2] temp = v.copy()
         temp[:,i] = x
-        cdef double xsum = x[0] + x[1]
-        cdef double likelihood = (phi_sum_i - x[0] + 1.) * sp.psi(x[0])
+        cdef DTYPE_t xsum = x[0] + x[1]
+        cdef DTYPE_t likelihood = (phi_sum_i - x[0] + 1.) * sp.psi(x[0])
         likelihood += (phi_cum_sum_i + self.m_alpha - x[1]) * sp.psi(x[1])
-        cdef double term = 1. + phi_sum_i + phi_cum_sum_i + self.m_alpha
+        cdef DTYPE_t term = 1. + phi_sum_i + phi_cum_sum_i + self.m_alpha
         likelihood -= (term - xsum) * sp.psi(xsum)
         likelihood += sp.gammaln(x[0]) + sp.gammaln(x[1]) - sp.gammaln(xsum)
         cdef np.ndarray[DTYPE_t] Esticks = expect_sticks(temp)
@@ -397,16 +413,16 @@ class online_hdp:
 
     def compute_dv(self, np.ndarray[DTYPE_t] x, \
                    np.ndarray[DTYPE_t, ndim=2] v, \
-                   int i, ys, double ys_scale, \
+                   int i, ys, DTYPE_t ys_scale, \
                    np.ndarray[DTYPE_t, ndim=2] var_phi, \
-                   double phi_sum_i, double phi_cum_sum_i):
+                   DTYPE_t phi_sum_i, DTYPE_t phi_cum_sum_i):
         cdef np.ndarray[DTYPE_t, ndim=2] temp = v.copy()
         temp[:,i] = x
         cdef np.ndarray[DTYPE_t] dv = np.zeros(2)
         cdef np.ndarray[DTYPE_t] Esticks_2nd = expect_sticks(temp)
-        cdef double xsum = x[0] + x[1]
-        cdef double term = 1. + phi_sum_i + phi_cum_sum_i + self.m_alpha
-        cdef double term2 = (term - xsum) * sp.polygamma(1, xsum)
+        cdef DTYPE_t xsum = x[0] + x[1]
+        cdef DTYPE_t term = 1. + phi_sum_i + phi_cum_sum_i + self.m_alpha
+        cdef DTYPE_t term2 = (term - xsum) * sp.polygamma(1, xsum)
         dv[0] = sp.polygamma(1, x[0]) * (phi_sum_i - x[0] + 1.) - term2
         dv[1] = sp.polygamma(1, x[1]) * (phi_cum_sum_i + self.m_alpha - x[1]) - term2
 
@@ -432,7 +448,7 @@ class online_hdp:
     def _optimize_v(self, np.ndarray[DTYPE_t, ndim=2] v, \
                     np.ndarray[DTYPE_t, ndim=2] phi_all, \
                     np.ndarray[DTYPE_t, ndim=2] var_phi, \
-                    ys, double ys_scale):
+                    ys, DTYPE_t ys_scale):
         cdef np.ndarray[DTYPE_t] phi_sum = np.sum(phi_all[:,:self.m_K-1], 0)
         cdef np.ndarray[DTYPE_t] phi_cum = np.flipud(np.sum(phi_all[:,1:], 0))
         cdef np.ndarray[DTYPE_t] phi_cum_sum = np.flipud(np.cumsum(phi_cum))
@@ -449,14 +465,14 @@ class online_hdp:
     
     def likelihood_var_phi(self, np.ndarray[DTYPE_t] x, \
                            np.ndarray[DTYPE_t, ndim=2] var_phi, \
-                           int i, ys, double ys_scale, \
+                           int i, ys, DTYPE_t ys_scale, \
                            np.ndarray[DTYPE_t] phi_dot_Elogbeta_i, \
                            np.ndarray[DTYPE_t] Elogsticks_1st, \
                            np.ndarray[DTYPE_t] Esticks_2nd):
         cdef np.ndarray[DTYPE_t] xnorm = np.exp(x - logsumexp(x))
         cdef np.ndarray[DTYPE_t, ndim=2] temp = var_phi.copy()
         temp[i,:] = xnorm
-        cdef double likelihood = xnorm.dot(phi_dot_Elogbeta_i)
+        cdef DTYPE_t likelihood = xnorm.dot(phi_dot_Elogbeta_i)
         likelihood += Elogsticks_1st.dot(xnorm) - xnorm.dot(np.log(xnorm + 1e-100))
         cdef np.ndarray[DTYPE_t] Epi_dot_c = Esticks_2nd.dot(temp)
         cdef np.ndarray[DTYPE_t] exps
@@ -465,12 +481,12 @@ class online_hdp:
         for y, mu in zip(ys, self.m_mu):
             likelihood += mu[y,:].dot(Epi_dot_c) * ys_scale
             exps = mu.dot(Epi_dot_c)
-            likelihood -= logsumexp(exps)
+            likelihood -= logsumexp(exps) * ys_scale
         return -likelihood
 
     def compute_dvar_phi(self, np.ndarray[DTYPE_t] x, \
                          np.ndarray[DTYPE_t, ndim=2] var_phi, \
-                         int i, ys, double ys_scale, \
+                         int i, ys, DTYPE_t ys_scale, \
                          np.ndarray[DTYPE_t] phi_dot_Elogbeta_i, \
                          np.ndarray[DTYPE_t] Elogsticks_1st, \
                          np.ndarray[DTYPE_t] Esticks_2nd):
@@ -505,7 +521,7 @@ class online_hdp:
                           np.ndarray[DTYPE_t, ndim=2] phi, \
                           np.ndarray[DTYPE_t, ndim=2] Elogbeta, \
                           np.ndarray[DTYPE_t, ndim=2] v, \
-                          ys, double ys_scale):
+                          ys, DTYPE_t ys_scale):
         cdef np.ndarray[DTYPE_t] Esticks_2nd = expect_sticks(v)
         cdef np.ndarray[DTYPE_t, ndim=2] phi_dot_Elogbeta = np.dot(phi.T, Elogbeta.T)        
         cdef int i
@@ -521,11 +537,11 @@ class online_hdp:
         return var_phi
 
     def _deriv_mu(self, np.ndarray[DTYPE_t, ndim=2] mu, int C,
-                  np.ndarray[DTYPE_t] Epi_dot_c, int y, double ys_scale):
+                  np.ndarray[DTYPE_t] Epi_dot_c, int y, DTYPE_t ys_scale):
         cdef np.ndarray[DTYPE_t, ndim=2] dmu = np.zeros((C, self.m_T))
         cdef np.ndarray[DTYPE_t] exps = mu.dot(Epi_dot_c)
         cdef np.ndarray[DTYPE_t] exps_norm = np.exp(exps - logsumexp(exps))
-        dmu[y,:] += Epi_dot_c
+        dmu[y,:] += Epi_dot_c * ys_scale
         cdef int c
         for c in range(0, C):
             dmu[c,:] -= Epi_dot_c * exps_norm[c] * ys_scale
@@ -540,7 +556,7 @@ class online_hdp:
         """
         batchids = [unique_words[id] for id in doc.words]
         ys = doc.ys
-        cdef double ys_scale = doc.total / len(self.m_C)
+        cdef DTYPE_t ys_scale = 4.
 
         cdef np.ndarray[DTYPE_t, ndim=2] Elogbeta_doc = self.m_Elogbeta[:, doc.words]
         ## very similar to the hdp equations
@@ -589,16 +605,16 @@ class online_hdp:
             if np.mean(abs(Epi_dot_c - old_Epi_dot_c)) < meanchangethresh:
                 break
 
-        cdef double likelihood = 0.0
+        cdef DTYPE_t likelihood = 0.0
         # compute likelihood
         # var_phi part/ C in john's notation
         likelihood += np.sum((Elogsticks_1st - np.log(var_phi + 1e-100)) * var_phi)
 
         # v part/ v in john's notation, john's beta is alpha here
-        phi_sum = np.sum(phi_all[:,:self.m_K-1], 0)
-        phi_cum = np.flipud(np.sum(phi_all[:,1:], 0))
-        phi_cum_sum = np.flipud(np.cumsum(phi_cum))
-        fixed_terms = 1. + phi_sum + phi_cum_sum + self.m_alpha
+        cdef np.ndarray[DTYPE_t] phi_sum = np.sum(phi_all[:,:self.m_K-1], 0)
+        cdef np.ndarray[DTYPE_t] phi_cum = np.flipud(np.sum(phi_all[:,1:], 0))
+        cdef np.ndarray[DTYPE_t] phi_cum_sum = np.flipud(np.cumsum(phi_cum))
+        cdef np.ndarray[DTYPE_t] fixed_terms = 1. + phi_sum + phi_cum_sum + self.m_alpha
         likelihood = np.sum((phi_sum - v[0] + 1.) * sp.psi(v[0]))
         likelihood += np.sum((phi_cum_sum + self.m_alpha - v[1]) * sp.psi(v[1]))
         likelihood -= np.sum((fixed_terms - v[0] - v[1]) * sp.psi(v[0] + v[1]))

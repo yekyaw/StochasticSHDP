@@ -142,9 +142,8 @@ def run_online_hdp():
   total_time = 0.0
   total_doc_count = 0
   split_doc_count = 0
-  doc_seen = set()
   log_file = open("%s/log.dat" % result_directory, "w") 
-  log_file.write("iteration time doc.count score word.count unseen.score unseen.word.count\n")
+  log_file.write("iteration time doc.count score word.count\n")
 
   if options.test_data_path is not None:
     test_log_file = open("%s/test-log.dat" % result_directory, "w") 
@@ -165,23 +164,18 @@ def run_online_hdp():
       if batchsize == 0:
         break
       docs = c.docs
-      unseen_ids = range(batchsize)
     else:
       ids = random.sample(range(c_train.num_docs), batchsize)
       docs = [c_train.docs[id] for id in ids]
-      # Record the seen docs.
-      unseen_ids = set([i for (i, id) in enumerate(ids) if (cur_chosen_split, id) not in doc_seen])
-      if len(unseen_ids) != 0:
-        doc_seen.update([(cur_chosen_split, id) for id in ids]) 
 
     total_doc_count += batchsize
     split_doc_count += batchsize
 
     # Do online inference and evaluate on the fly dataset
-    (score, count, unseen_score, unseen_count) = ohdp.process_documents(docs, options.var_converge, unseen_ids)
+    (score, count) = ohdp.process_documents(docs, options.var_converge)
     total_time += time.clock() - t0
-    log_file.write("%d %d %d %.5f %d %.5f %d\n" % (iter, total_time,
-                    total_doc_count, score, count, unseen_score, unseen_count))
+    log_file.write("%d %d %d %.5f %d\n" % (iter, total_time,
+                    total_doc_count, score, count))
     log_file.flush()
 
     # Evaluate on the test data: fixed and folds
