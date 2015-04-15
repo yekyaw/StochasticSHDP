@@ -6,9 +6,10 @@ import numpy as np
 import scipy.special as sp
 from scipy.optimize import minimize
 from scipy.misc import logsumexp
-import random, time
+import random
 from concurrent.futures import ProcessPoolExecutor
 from multiprocessing import cpu_count
+from glm import *
 
 meanchangethresh = 0.001
 min_adding_noise_point = 10
@@ -88,14 +89,14 @@ def lda_e_step_half(doc, alpha, Elogbeta, split_ratio):
     while iter < max_iter:
         lastgamma = gamma
         iter += 1
-        gamma = alpha + expElogtheta * np.dot(counts/phinorm, expElogbeta_train.T)
+        gamma = alpha + expElogtheta * np.dot(counts / phinorm, expElogbeta_train.T)
         Elogtheta = dirichlet_expectation(gamma)
         expElogtheta = np.exp(Elogtheta)
         phinorm = np.dot(expElogtheta, expElogbeta_train) + 1e-100
-        meanchange = np.mean(abs(gamma-lastgamma))
+        meanchange = np.mean(abs(gamma - lastgamma))
         if (meanchange < meanchangethresh):
             break
-    gamma = gamma/np.sum(gamma)
+    gamma = gamma / np.sum(gamma)
     counts = np.array(counts_test)
     expElogbeta_test = expElogbeta[:, words_test]
     score = np.sum(counts * np.log(np.dot(gamma, expElogbeta_test) + 1e-100))
@@ -122,15 +123,15 @@ def lda_e_step_split(doc, alpha, beta, max_iter=100):
     while iter < max_iter:
         lastgamma = gamma
         iter += 1
-        gamma = alpha + expElogtheta * np.dot(counts/phinorm,  betad.T)
+        gamma = alpha + expElogtheta * np.dot(counts / phinorm,  betad.T)
         Elogtheta = dirichlet_expectation(gamma)
         expElogtheta = np.exp(Elogtheta)
         phinorm = np.dot(expElogtheta, betad) + 1e-100
-        meanchange = np.mean(abs(gamma-lastgamma))
+        meanchange = np.mean(abs(gamma - lastgamma))
         if (meanchange < meanchangethresh):
             break
 
-    gamma = gamma/np.sum(gamma)
+    gamma = gamma / np.sum(gamma)
     counts = np.array(counts_test)
     betad = beta[:, words_test]
     score = np.sum(counts * np.log(np.dot(gamma, betad) + 1e-100))
@@ -152,23 +153,23 @@ def lda_e_step(doc, alpha, beta, max_iter=100):
         Elogtheta = dirichlet_expectation(gamma)
         expElogtheta = np.exp(Elogtheta)
         phinorm = np.dot(expElogtheta, betad) + 1e-100
-        meanchange = np.mean(abs(gamma-lastgamma))
+        meanchange = np.mean(abs(gamma - lastgamma))
         if (meanchange < meanchangethresh):
             break
 
     likelihood = np.sum(counts * np.log(phinorm))
-    likelihood += np.sum((alpha-gamma) * Elogtheta)
+    likelihood += np.sum((alpha - gamma) * Elogtheta)
     likelihood += np.sum(sp.gammaln(gamma) - sp.gammaln(alpha))
     likelihood += sp.gammaln(np.sum(alpha)) - sp.gammaln(np.sum(gamma))
 
     return (likelihood, gamma)
 
 class suff_stats:
-    def __init__(self, C, T, Wt, Dt):
+    def __init__(self, responses, T, Wt, Dt):
         self.m_batchsize = Dt
         self.m_var_sticks_ss = np.zeros(T) 
         self.m_var_beta_ss = np.zeros((T, Wt))
-        self.m_dmu_ss = [np.zeros((n, T)) for n in C]
+        self.m_dmu_ss = [response.suff_stats() for response in responses]
     
     def set_zero(self):
         self.m_var_sticks_ss.fill(0.0)
@@ -177,7 +178,7 @@ class suff_stats:
 
 class online_hdp:
     ''' hdp model using stick breaking'''
-    def __init__(self, C, T, K, D, W, eta, alpha, gamma, kappa, tau, scale=1.0,
+    def __init__(self, responses, T, K, D, W, eta, alpha, gamma, kappa, tau, scale=1.0,
                  adding_noise=False, penalty_lambda=1., l1_ratio=0.6):
         """
         this follows the convention of the HDP paper
@@ -191,22 +192,19 @@ class online_hdp:
         kappa: learning rate
         tau: slow down parameter
         """
-
-        self.m_C = C
-        self.m_W = W
+        self.m_W = W + 1
         self.m_D = D
         self.m_T = T
         self.m_K = K
         self.m_alpha = alpha
         self.m_gamma = gamma
 
-        self.m_var_sticks = np.zeros((2, T - 1))
+        self.m_var_sticks = np.zeros((2, self.m_T - 1))
         self.m_var_sticks[0] = np.random.gamma(100., 1./100., T - 1)
-        self.m_var_sticks[1] = range(T - 1, 0, -1)
+        self.m_var_sticks[1] = range(self.m_T - 1, 0, -1)
 
         self.m_varphi_ss = np.zeros(T)
-        self.m_mu = [np.random.normal(0., 0.1, (n, T)) for n in C]
-        self.m_lambda = np.random.gamma(100., 1./100., (T, W))
+        self.m_lambda = np.random.gamma(100., 1./100., (self.m_T, self.m_W))
         self.m_eta = eta
         self.m_Elogbeta = dirichlet_expectation(self.m_lambda)
 
@@ -225,6 +223,25 @@ class online_hdp:
         self.m_timestamp = np.zeros(self.m_W, dtype=int)
         self.m_r = [0]
         self.m_lambda_sum = np.sum(self.m_lambda, axis=1)
+
+        self.m_responses = []
+        self.init_responses(responses)
+
+    def init_responses(self, responses):
+        for response in responses:
+            if response == "Poisson":
+                glm = Poisson(self.m_T)
+            elif response == "Bernoulli":
+                glm = Bernoulli(self.m_T)
+            elif response.startswith("Categorical"):
+                C = int(response.split(":")[1])
+                glm = Categorical(self.m_T, C)
+            elif response == "Dummy":
+                glm = Dummy(self.m_T)
+            else:
+                raise NotImplementedError("%s is an invalid response type!" \
+                                          % response)
+            self.m_responses.append(glm)
 
     def new_init(self, c):
         self.m_lambda = 1.0/self.m_W + 0.01 * np.random.gamma(1.0, 1.0, \
@@ -248,7 +265,7 @@ class online_hdp:
         for doc in docs:
             old_lambda = self.m_lambda[:, word_list].copy()
             for iter in range(5):
-                sstats = suff_stats(self.m_C, self.m_T, Wt, 1) 
+                sstats = suff_stats(self.m_responses, self.m_T, Wt, 1) 
                 self.doc_e_step(doc, sstats, Elogsticks_1st, \
                                 word_list, unique_words, var_converge=0.0001, max_iter=5)
 
@@ -256,6 +273,9 @@ class online_hdp:
                 self.m_Elogbeta = dirichlet_expectation(self.m_lambda)
 
         self.m_lambda_sum = np.sum(self.m_lambda, axis=1)
+
+    def num_responses(self):
+        return len(self.m_responses)
 
     def do_e_step_concurrent(self, docs, Wt, word_list, unique_words, \
                              var_converge, num_workers=num_cores):
@@ -269,7 +289,7 @@ class online_hdp:
 
     def process_chunk(self, arg):
         (chunk, Elogsticks_1st, Wt, word_list, unique_words, var_converge) = arg
-        ss = suff_stats(self.m_C, self.m_T, Wt, len(chunk))
+        ss = suff_stats(self.m_responses, self.m_T, Wt, len(chunk))
         score = 0.0
         count = 0
         for i, doc in enumerate(chunk):
@@ -317,7 +337,7 @@ class online_hdp:
         # run variational inference on some new docs
         score = 0.0
         count = 0
-        ss = suff_stats(self.m_C, self.m_T, Wt, 0)
+        ss = suff_stats(self.m_responses, self.m_T, Wt, 0)
 
         results = self.do_e_step_concurrent(docs, Wt, word_list, \
                                             unique_words, var_converge)
@@ -330,7 +350,6 @@ class online_hdp:
                            zip(ss.m_dmu_ss, chunk_ss.m_dmu_ss)]
             score += chunk_score
             count += chunk_count
-
         if adding_noise:
             # add noise to the ss
             print("adding noise at this stage...")
@@ -366,7 +385,8 @@ class online_hdp:
         self.m_lambda = self.m_lambda[idx,:]
         self.m_lambda_sum = self.m_lambda_sum[idx]
         self.m_Elogbeta = self.m_Elogbeta[idx,:]
-        self.m_mu = [mu[:,idx] for mu in self.m_mu]
+        for response in self.m_responses:
+            response.mu = response.mu[:,idx]
         
     def _optimize_v(self, v, phi_all, var_phi, ys, ys_scale):
         phi_sum = np.sum(phi_all[:,:self.m_K-1], 0)
@@ -383,21 +403,9 @@ class online_hdp:
             likelihood += sp.gammaln(x[0]) + sp.gammaln(x[1]) - sp.gammaln(xsum)
             Esticks = expect_sticks(temp)
             Epi_dot_c = Esticks.dot(var_phi)
-            for y, mu in zip(ys, self.m_mu):
-                likelihood += mu[y,:].dot(Epi_dot_c) * ys_scale
-                exps = mu.dot(Epi_dot_c)
-                likelihood -= logsumexp(exps) * ys_scale
+            for y, response in zip(ys, self.m_responses):
+                likelihood += ys_scale * response.likelihood(Epi_dot_c, y)
             return likelihood
-        def deriv_covs(v_i, i, Esticks, mu):
-            dig_sum = np.sum(v_i, 0)
-            deriv_covs = np.zeros(2)
-            mu_dot_var_phi = mu.dot(var_phi[i,:])
-            deriv_covs[0] = Esticks[i] * mu_dot_var_phi * v_i[1] / (v_i[0] * dig_sum + 1e-100) 
-            deriv_covs[1] = -Esticks[i] * mu_dot_var_phi / (dig_sum + 1e-100)
-            deriv_covs[0] -= mu.dot(Esticks[i+1:].dot(var_phi[i+1:,:])) / (dig_sum + 1e-100)
-            deriv_covs[1] += mu.dot(Esticks[i+1:].dot(var_phi[i+1:,:])) * v_i[0] / \
-                        (v_i[1] * dig_sum + 1e-100)
-            return deriv_covs
         def compute_dv(x, v, i):
             temp = v.copy()
             temp[:,i] = x
@@ -407,15 +415,8 @@ class online_hdp:
             term2 = (fixed_terms[i] - xsum) * sp.polygamma(1, xsum)
             dv[0] = sp.polygamma(1, x[0]) * (phi_sum[i] - x[0] + 1.) - term2
             dv[1] = sp.polygamma(1, x[1]) * (phi_cum_sum[i] + self.m_alpha - x[1]) - term2
-            Epi_dot_c = Esticks_2nd.dot(var_phi)
-            for y, mu, C in zip(ys, self.m_mu, self.m_C):
-                dcovs_y = deriv_covs(x, i, Esticks_2nd, mu[y,:])
-                dv += dcovs_y * ys_scale
-                exps = mu.dot(Epi_dot_c)
-                exps_norm = np.exp(exps - logsumexp(exps))
-                for c in range(0, C):
-                    dcovs_c = deriv_covs(x, i, Esticks_2nd, mu[c,:])
-                    dv -= dcovs_c * exps_norm[c] * ys_scale
+            for y, response in zip(ys, self.m_responses):
+                dv += ys_scale * response.dv(x, i, Esticks_2nd, var_phi, y)
             return dv
 
         bounds = [(1e-100, None)] * 2
@@ -437,30 +438,22 @@ class online_hdp:
             likelihood = xnorm.dot(phi_dot_Elogbeta[i,:])
             likelihood += Elogsticks_1st.dot(xnorm) - xnorm.dot(np.log(xnorm + 1e-100))
             Epi_dot_c = Esticks_2nd.dot(temp)
-            for y, mu in zip(ys, self.m_mu):
-                likelihood += mu[y,:].dot(Epi_dot_c) * ys_scale
-                exps = mu.dot(Epi_dot_c)
-                likelihood -= logsumexp(exps) * ys_scale
+            for y, response in zip(ys, self.m_responses):
+                likelihood += ys_scale * response.likelihood(Epi_dot_c, y)
             return likelihood
-        def deriv_helper(xnorm, c):
-            res = c * xnorm - xnorm * c.dot(xnorm)
-            return res
         def compute_dvar_phi(x, var_phi, i):
             xnorm = np.exp(x - logsumexp(x))
             temp = var_phi.copy()
             temp[i,:] = xnorm
+            deriv_helper = lambda xnorm, c : c * xnorm - xnorm * c.dot(xnorm)
             dvar_phi = deriv_helper(xnorm, phi_dot_Elogbeta[i,:])
             dvar_phi += deriv_helper(xnorm, Elogsticks_1st)
             dvar_phi -= deriv_helper(xnorm, np.ones(xnorm.shape))
             dvar_phi -= deriv_helper(xnorm, np.log(xnorm + 1e-100))
-            for y, mu, C in zip(ys, self.m_mu, self.m_C):
-                dvar_phi += deriv_helper(xnorm, Esticks_2nd[i] * mu[y,:]) * ys_scale
-                Epi_dot_c = Esticks_2nd.dot(temp)
-                exps = mu.dot(Epi_dot_c)
-                exps_norm = np.exp(exps - logsumexp(exps))
-                for c in range(0, C):
-                    term = Esticks_2nd[i] * mu[c,:] * exps_norm[c]
-                    dvar_phi -= deriv_helper(xnorm, term) * ys_scale
+            stick = Esticks_2nd[i]
+            Epi_dot_c = Esticks_2nd.dot(temp)
+            for y, response in zip(ys, self.m_responses):
+                dvar_phi += ys_scale * response.dvar_phi(xnorm, stick, Epi_dot_c, y)
             return dvar_phi
 
         for i in range(self.m_K):
@@ -471,15 +464,6 @@ class online_hdp:
                 x = res.x
                 var_phi[i,:] = np.exp(x - logsumexp(x))
         return var_phi
-
-    def _deriv_mu(self, mu, C, Epi_dot_c, y, ys_scale):
-        dmu = np.zeros(mu.shape)
-        exps = mu.dot(Epi_dot_c)
-        exps_norm = np.exp(exps - logsumexp(exps))
-        dmu[y,:] += Epi_dot_c * ys_scale
-        for c in range(0, C):
-            dmu[c,:] -= Epi_dot_c * exps_norm[c] * ys_scale
-        return dmu
 
     # def doc_e_step(self, doc, ss, Elogsticks_1st, \
     #                word_list, unique_words, var_converge, \
@@ -555,9 +539,6 @@ class online_hdp:
     #         converge = (likelihood - old_likelihood)/abs(old_likelihood)
     #         old_likelihood = likelihood
 
-    #         if converge < -0.000001:
-    #             print "warning, likelihood is decreasing!"
-            
     #         iter += 1
             
     #     # update the suff_stat ss 
@@ -565,8 +546,8 @@ class online_hdp:
     #     ss.m_var_sticks_ss += np.sum(var_phi, 0)   
     #     ss.m_var_beta_ss[:, batchids] += np.dot(var_phi.T, phi.T * doc.counts)
     #     Epi_dot_c = expect_sticks(v).dot(var_phi)
-    #     ss.m_dmu_ss = [dmu + self._deriv_mu(mu, C, Epi_dot_c, y, 1.) \
-    #                    for dmu, y, mu, C in zip(ss.m_dmu_ss, ys, self.m_mu, self.m_C)]
+    #     ss.m_dmu_ss = [dmu + response.dmu(Epi_dot_c, y) \
+    #                    for y, dmu, response in zip(ys, ss.m_dmu_ss, self.m_responses)]
 
     #     return(likelihood)
 
@@ -578,7 +559,7 @@ class online_hdp:
         """
         batchids = [unique_words[id] for id in doc.words]
         ys = doc.ys
-        ys_scale = 4.
+        ys_scale = 1.
 
         Elogbeta_doc = self.m_Elogbeta[:, doc.words]
         ## very similar to the hdp equations
@@ -649,17 +630,15 @@ class online_hdp:
         likelihood += np.sum(phi.T * np.dot(var_phi, Elogbeta_doc * doc.counts))
 
         # Y part
-        for y, mu in zip(ys, self.m_mu):
-            likelihood += mu[y,:].dot(Epi_dot_c) * ys_scale
-            exps = mu.dot(Epi_dot_c)
-            likelihood -= logsumexp(exps) * ys_scale
+        for y, response in zip(ys, self.m_responses):
+            likelihood += ys_scale * response.likelihood(Epi_dot_c, y)
         
         # update the suff_stat ss 
         # this time it only contains information from one doc
         ss.m_var_sticks_ss += np.sum(var_phi, 0)   
         ss.m_var_beta_ss[:, batchids] += np.dot(var_phi.T, phi.T * doc.counts)
-        ss.m_dmu_ss = [dmu + self._deriv_mu(mu, C, Epi_dot_c, y, ys_scale) \
-                       for dmu, y, mu, C in zip(ss.m_dmu_ss, ys, self.m_mu, self.m_C)]
+        ss.m_dmu_ss = [dmu + ys_scale * response.dmu(Epi_dot_c, y) \
+                       for y, dmu, response in zip(ys, ss.m_dmu_ss, self.m_responses)]
         return(likelihood)
 
     def doc_e_step_infer(self, doc, Elogsticks_1st, var_converge, max_iter=100):
@@ -746,9 +725,9 @@ class online_hdp:
         self.m_rhot = rhot
 
         # Update appropriate columns of lambda based on documents.
-        self.m_lambda[:, word_list] = self.m_lambda[:, word_list] * (1-rhot) + \
+        self.m_lambda[:, word_list] = self.m_lambda[:, word_list] * (1 - rhot) + \
             rhot * self.m_D * sstats.m_var_beta_ss / sstats.m_batchsize
-        self.m_lambda_sum = (1-rhot) * self.m_lambda_sum + \
+        self.m_lambda_sum = (1 - rhot) * self.m_lambda_sum + \
             rhot * self.m_D * np.sum(sstats.m_var_beta_ss, axis=1) / sstats.m_batchsize
 
         def grad_mu(mu, dmu):
@@ -756,7 +735,8 @@ class online_hdp:
             noisy_grad -= self.m_penalty_lambda * self.m_l1_ratio * np.sign(mu)
             noisy_grad -= self.m_penalty_lambda * (1 - self.m_l1_ratio) * 2 * mu
             return noisy_grad
-        self.m_mu = [mu + rhot * grad_mu(mu, dmu) for mu, dmu in zip(self.m_mu, sstats.m_dmu_ss)]
+        for response, dmu in zip(self.m_responses, sstats.m_dmu_ss):
+            response.mu += rhot * grad_mu(response.mu, dmu)
 
         self.m_updatect += 1
         self.m_timestamp[word_list] = self.m_updatect
@@ -773,7 +753,7 @@ class online_hdp:
         var_phi_sum = np.flipud(self.m_varphi_ss[1:])
         self.m_var_sticks[1] = np.flipud(np.cumsum(var_phi_sum)) + self.m_gamma
 
-        print(expect_sticks(self.m_var_sticks))
+        self.print_model()
 
     def update_expectations(self):
         """
@@ -793,8 +773,8 @@ class online_hdp:
 
     def print_model(self):
         print(expect_sticks(self.m_var_sticks))
-        for mu in self.m_mu:
-            print(mu)
+        for response in self.m_responses:
+            print(response.mu)
 
     def save_topics(self, filename):
         if not self.m_status_up_to_date:
@@ -829,32 +809,20 @@ class online_hdp:
         return (alpha, beta)
 
     def predict(self, gamma):
-        preds = [np.argmax(mu.dot(gamma)) for mu in self.m_mu]
+        preds = [response.predict(gamma) for response in self.m_responses]
         return preds
 
-    def infer_lda(self, docs):
-        lda_alpha, lda_beta = self.hdp_to_lda()
-        likelihood = 0
-        preds = np.zeros((len(docs), len(self.m_C)))
-        gammas = np.zeros((len(docs), self.m_T))
-        for i, doc in enumerate(docs):
-            (doc_score, gamma) = lda_e_step(doc, lda_alpha, lda_beta)
-            likelihood += doc_score
-            gammas[i] = gamma
-            preds[i,:] = self.predict(gamma)
-        return (likelihood, preds, gammas)
-
-    def infer_only(self, docs, var_converge):
+    def infer_only(self, docs):
         # be sure to run update_expectations()
         if not self.m_status_up_to_date:
             self.update_expectations()
         #alpha = alpha * self.m_gamma
         likelihood = 0
-        preds = np.zeros((len(docs), len(self.m_C)))
+        preds = np.zeros((len(docs), len(self.m_responses)))
         gammas = np.zeros((len(docs), self.m_T))
-        Elogsticks_1st = expect_log_sticks(self.m_var_sticks)
+        alpha, beta = self.hdp_to_lda()
         for i, doc in enumerate(docs):
-            (doc_score, gamma) = self.doc_e_step_infer(doc, Elogsticks_1st, var_converge)
+            (doc_score, gamma) = lda_e_step(doc, alpha, beta)
             likelihood += doc_score
             gammas[i] = gamma
             preds[i,:] = self.predict(gamma)

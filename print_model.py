@@ -4,22 +4,22 @@ import onlinehdp
 import pickle
 from optparse import OptionParser
 from glob import glob
-from sklearn.metrics import confusion_matrix, classification_report, accuracy_score
-from sklearn import svm
+from sklearn.metrics import confusion_matrix, classification_report, accuracy_score, hamming_loss
+from sklearn.linear_model import LogisticRegression
 np = onlinehdp.np
 
 def parse_args():
   parser = OptionParser()
   parser.set_defaults(C=None, T=100, K=10, D=-1, W=-1, eta=0.01, alpha=1.0, gamma=1.0,
-                      kappa=1., tau=1., batchsize=500, max_time=-1,
+                      kappa=0.9, tau=1., batchsize=500, max_time=-1,
                       max_iter=-1, var_converge=0.0001, 
                       corpus_name=None, data_path=None, test_data_path=None, 
                       test_data_path_in_folds=None, directory=None, save_lag=500, pass_ratio=0.5,
                       new_init=False, scale=1.0, adding_noise=False,
                       seq_mode=False, fixed_lag=False)
 
-  parser.add_option("--C", type="string", dest="C",
-                    help="number of classes [2]")
+  parser.add_option("--responses", type="string", dest="responses",
+                    help="response types [None]")
   parser.add_option("--T", type="int", dest="T",
                     help="top level truncation [100]")
   parser.add_option("--K", type="int", dest="K",
@@ -35,7 +35,7 @@ def parse_args():
   parser.add_option("--gamma", type="float", dest="gamma",
                     help="gamma value [1.0]")
   parser.add_option("--kappa", type="float", dest="kappa",
-                    help="learning rate [1.0]")
+                    help="learning rate [0.9]")
   parser.add_option("--tau", type="float", dest="tau",
                     help="slow down [1.0]")
   parser.add_option("--batchsize", type="int", dest="batchsize",
@@ -121,32 +121,30 @@ def run_online_hdp():
   options_file.close()
 
   print("creating online hdp instance.")
-  C = options.C.split(',')
-  C = [int(i) for i in C]
-  ohdp = pickle.load(open('%s/final.model' % result_directory, 'rb'))
+  ohdp = pickle.load(open('%s/final.model' % result_directory, 'rb'), encoding='latin1')
   ohdp.print_model()
 
   # Makeing final predictions.
   if options.test_data_path is not None:
     print("Making predictions.")
     labels_test = np.array([doc.ys for doc in c_test.docs])
-#    (_, preds, gammas_test) = ohdp.infer_lda(c_test.docs)
-    (_, preds, gammas_test) = ohdp.infer_only(c_test.docs, options.var_converge)
+    (_, preds, gammas_test) = ohdp.infer_only(c_test.docs)
     print("HDP")
-    for i in range(len(C)):
+    for i in range(ohdp.num_responses()):
       report = classification_report(labels_test[:,i], preds[:,i])
       confusion = confusion_matrix(labels_test[:,i], preds[:,i])
       accuracy = accuracy_score(labels_test[:,i], preds[:,i])
       print("Accuracy rate : %f" % accuracy)
       print(report)    
       print(confusion)
+    hamming_accuracy = 1 - hamming_loss(labels_test, preds)
+    print("Hamming accuracy : %f" % hamming_accuracy)
 
     labels_train = np.array([doc.ys for doc in c_train.docs])
-#    (_, _, gammas_train) = ohdp.infer_lda(c_train.docs)
-    (_, _, gammas_train) = ohdp.infer_only(c_train.docs, options.var_converge)
-    print("SVM")
-    for i in range(len(C)):
-      clf = svm.LinearSVC()
+    (_, _, gammas_train) = ohdp.infer_only(c_train.docs)
+    print("Logistic Regression")
+    for i in range(ohdp.num_responses()):
+      clf = LogisticRegression()
       clf.fit(gammas_train, labels_train[:,i])
       preds = clf.predict(gammas_test)
       report = classification_report(labels_test[:,i], preds)
