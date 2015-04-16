@@ -1,93 +1,92 @@
 import numpy as np
-from scipy.misc import logsumexp
 import abc
-
-def v_deriv_helper(v_i, i, Esticks, mu, var_phi):
-    dig_sum = np.sum(v_i, 0)
-    deriv_covs = np.zeros(2)
-    mu_dot_var_phi = mu.dot(var_phi[i,:])
-    deriv_covs[0] = Esticks[i] * mu_dot_var_phi * v_i[1] / (v_i[0] * dig_sum + 1e-100) 
-    deriv_covs[1] = -Esticks[i] * mu_dot_var_phi / (dig_sum + 1e-100)
-    deriv_covs[0] -= mu.dot(Esticks[i+1:].dot(var_phi[i+1:,:])) / (dig_sum + 1e-100)
-    deriv_covs[1] += mu.dot(Esticks[i+1:].dot(var_phi[i+1:,:])) * v_i[0] / \
-                     (v_i[1] * dig_sum + 1e-100)
-    return deriv_covs
+from utils import compute_eta, deriv_helper
 
 class GLM:
     __metaclass__ = abc.ABCMeta
 
     def suff_stats(self):
         return np.zeros(self.mu.shape)
-
+    
     @abc.abstractmethod
     def predict(self, gamma):
         return
 
     @abc.abstractmethod
-    def likelihood(self, Epi_dot_c, y):
+    def likelihood(self, var_phi, phi, y):
         return
 
     @abc.abstractmethod
-    def dv(self, v_i, i, Esticks_2nd, var_phi, y):
-        return
+    def dphi(self, xnorm, phi, i, var_phi, y):
+        return    
 
     @abc.abstractmethod
-    def dvar_phi(self, xnorm, stick, Epi_dot_c, y):
+    def dvar_phi(self, xnorm, var_phi, i, phi, y):
         return
-
+    
     @abc.abstractmethod
-    def dmu(self, Epi_dot_c, y):
+    def dmu(self, var_phi, phi, y):
         return
 
 class Dummy(GLM):
     def __init__(self, T):
         self.mu = np.zeros(T)
-    
     def predict(self, gamma):
         return 0
-
-    def likelihood(self, Epi_dot_c, y):
+    def likelihood(self, var_phi, phi, y):
         return 0.
-
-    def dv(self, v_i, i, Esticks_2nd, var_phi, y):
+    def dphi(self, xnorm, phi, i, var_phi, y):
         return 0.
-
-    def dvar_phi(self, xnorm, stick, Epi_dot_c, y):
+    def dvar_phi(self, xnorm, var_phi, i, phi, y):
         return 0.
-
-    def dmu(self, Epi_dot_c, y):
+    def dmu(self, var_phi, phi, y):
         return 0.
-
+    
 class Poisson(GLM):
     def __init__(self, T):
         self.mu = np.random.normal(0., 0.1, T)
     def predict(self, gamma):
-        eta = self.mu.dot(gamma)
-        return np.round(np.exp(eta))
-    def likelihood(self, Epi_dot_c, y):
-        eta = self.mu.dot(Epi_dot_c)
-        likelihood = y * eta
-        likelihood -= np.exp(eta)
+        mean = self.mu.dot(gamma)
+        return np.round(np.exp(mean))
+    def _expected_log_norm_parts(self, var_phi, phi):
+        N = phi.shape[0]
+        mu_exp = np.exp(self.mu / N)
+        return phi.dot(var_phi).dot(mu_exp)
+    def _expected_log_norm(self, var_phi, phi):
+        parts = self._expected_log_norm_parts(var_phi, phi)
+        return np.prod(parts)
+    def likelihood(self, var_phi, phi, y):
+        eta = compute_eta(var_phi, phi)
+        likelihood = y * self.mu.dot(eta)
+        likelihood -= self._expected_log_norm(var_phi, phi)
         return likelihood
-    def dv(self, v_i, i, Esticks_2nd, var_phi, y):
-        dcovs = v_deriv_helper(v_i, i, Esticks_2nd, self.mu, var_phi)
-        deriv = y * dcovs
-        Epi_dot_c = Esticks_2nd.dot(var_phi)
-        eta = self.mu.dot(Epi_dot_c)
-        deriv -= dcovs * np.exp(eta)
-        return deriv
-    def dvar_phi(self, xnorm, stick, Epi_dot_c, y):
-        deriv_helper = lambda xnorm, c : c * xnorm - xnorm * c.dot(xnorm)
-        deriv = y * deriv_helper(xnorm, stick * self.mu)
-        eta = self.mu.dot(Epi_dot_c)
-        coef = stick * self.mu * np.exp(eta)
-        deriv -= deriv_helper(xnorm, coef)
-        return deriv
-    def dmu(self, Epi_dot_c, y):
-        dmu = np.zeros(self.mu.shape)
-        dmu += y * Epi_dot_c
-        eta = self.mu.dot(Epi_dot_c)
-        dmu -= Epi_dot_c * np.exp(eta)
+    def dphi(self, xnorm, phi, i, var_phi, y):
+        N = phi.shape[0]
+        dphi = deriv_helper(xnorm, y * var_phi.dot(self.mu) / N)
+        log_norm_parts = self._expected_log_norm_parts(var_phi, phi)
+        log_norm = np.prod(log_norm_parts)
+        log_norm_parts_minus_n = log_norm / (log_norm_parts + 1e-100)
+        coef = log_norm_parts_minus_n[i] * var_phi.dot(np.exp(self.mu / N))
+        dphi -= deriv_helper(xnorm, coef)
+        return dphi
+    def dvar_phi(self, xnorm, var_phi, i, phi, y):
+        N = phi.shape[0]
+        dvar_phi = deriv_helper(xnorm, y * np.mean(phi[:,i]) * self.mu)
+        log_norm_parts = self._expected_log_norm_parts(var_phi, phi)
+        log_norm = np.prod(log_norm_parts)
+        log_norm_parts_minus_n = log_norm / (log_norm_parts + 1e-100)
+        coef = phi[:,i].dot(log_norm_parts_minus_n) * np.exp(self.mu / N)
+        dvar_phi -= deriv_helper(xnorm, coef)
+        return dvar_phi        
+    def dmu(self, var_phi, phi, y):
+        N = phi.shape[0]
+        eta = compute_eta(var_phi, phi)
+        dmu = y * eta
+        log_norm_parts = self._expected_log_norm_parts(var_phi, phi)
+        log_norm = np.prod(log_norm_parts)
+        log_norm_parts_minus_n = log_norm / (log_norm_parts + 1e-100)
+        term = log_norm_parts_minus_n.dot(phi.dot(var_phi)) / N
+        dmu -= term * np.exp(self.mu / N)
         return dmu
 
 class Categorical(GLM):
@@ -95,73 +94,107 @@ class Categorical(GLM):
         self.C = C
         self.mu = np.random.normal(0., 0.1, (C, T))
     def predict(self, gamma):
-        return np.argmax(self.mu.dot(gamma))
-    def likelihood(self, Epi_dot_c, y):
-        likelihood = self.mu[y,:].dot(Epi_dot_c)
-        exps = self.mu.dot(Epi_dot_c)
-        likelihood -= logsumexp(exps)
+        mean = self.mu.dot(gamma)
+        return np.argmax(mean)
+    def _expected_exps_parts(self, var_phi, phi):
+        N = phi.shape[0]
+        mu_exp = np.exp(self.mu / N)
+        return mu_exp.dot(phi.dot(var_phi).T)
+    def _expected_log_norm(self, var_phi, phi):
+        parts = self._expected_exps_parts(var_phi, phi)
+        exps = np.prod(parts, 1)
+        return np.log(np.sum(exps))
+    def likelihood(self, var_phi, phi, y):
+        eta = compute_eta(var_phi, phi)
+        likelihood = self.mu[y,:].dot(eta)
+        likelihood -= self._expected_log_norm(var_phi, phi)
         return likelihood
-    def dv(self, v_i, i, Esticks_2nd, var_phi, y):
-        dcovs_y = v_deriv_helper(v_i, i, Esticks_2nd, self.mu[y,:], var_phi)
-        deriv = dcovs_y
-        Epi_dot_c = Esticks_2nd.dot(var_phi)
-        exps = self.mu.dot(Epi_dot_c)
-        exps_norm = np.exp(exps - logsumexp(exps))
-        for c in range(0, self.C):
-            dcovs_c = v_deriv_helper(v_i, i, Esticks_2nd, self.mu[c,:], var_phi)
-            deriv -= dcovs_c * exps_norm[c]
-        return deriv
-    def dvar_phi(self, xnorm, stick, Epi_dot_c, y):
-        deriv_helper = lambda xnorm, c : c * xnorm - xnorm * c.dot(xnorm)
-        exps = self.mu.dot(Epi_dot_c)
-        exps_norm = np.exp(exps - logsumexp(exps))
-        deriv = deriv_helper(xnorm, stick * self.mu[y,:])
-        for c in range(0, self.C):
-            coef = stick * self.mu[c,:] * exps_norm[c]
-            deriv -= deriv_helper(xnorm, coef)
-        return deriv
-    def dmu(self, Epi_dot_c, y):
-        dmu = np.zeros(self.mu.shape)
-        exps = self.mu.dot(Epi_dot_c)
-        exps_norm = np.exp(exps - logsumexp(exps))
-        dmu[y,:] += Epi_dot_c
-        for c in range(0, self.C):
-            dmu[c,:] -= Epi_dot_c * exps_norm[c]
-        return dmu
+    def dphi(self, xnorm, phi, i, var_phi, y):
+        N = phi.shape[0]
+        dphi = deriv_helper(xnorm, var_phi.dot(self.mu[y,:]) / N)
+        exps_parts = self._expected_exps_parts(var_phi, phi)
+        exps = np.prod(exps_parts, 1)
+        denom = np.sum(exps)
+        for c in range(self.C):
+            exp_parts_minus_n = exps[c] / (exps_parts[c,:] + 1e-100)
+            coef = exp_parts_minus_n[i] * var_phi.dot(np.exp(self.mu[c,:] / N)) / denom
+            dphi -= deriv_helper(xnorm, coef)
+        return dphi
+    def dvar_phi(self, xnorm, var_phi, i, phi, y):
+        N = phi.shape[0]
+        dvar_phi = deriv_helper(xnorm, np.mean(phi[:,i]) * self.mu[y,:])
+        exps_parts = self._expected_exps_parts(var_phi, phi)
+        exps = np.prod(exps_parts, 1)
+        denom = np.sum(exps)
+        for c in range(self.C):
+            exp_parts_minus_n = exps[c] / (exps_parts[c,:] + 1e-100)
+            coef = np.exp(self.mu[c,:] / N).dot(phi[:,i].dot(exp_parts_minus_n)) / denom
+            dvar_phi -= deriv_helper(xnorm, coef)
+        return dvar_phi        
+    def dmu(self, var_phi, phi, y):
+        N = phi.shape[0]
+        dmu = np.zeros(self.mu.shape)        
+        eta = compute_eta(var_phi, phi)
+        dmu[y,:] += eta
+        exps_parts = self._expected_exps_parts(var_phi, phi)
+        exps = np.prod(exps_parts, 1)
+        denom = np.sum(exps)
+        for c in range(self.C):
+            exp_parts_minus_n = exps[c] / (exps_parts[c,:] + 1e-100)
+            term = exp_parts_minus_n.dot(phi.dot(var_phi)) / N
+            dmu[c,:] -= term * np.exp(self.mu[c,:] / N) / denom
+        return dmu    
 
 class Bernoulli(GLM):
     def __init__(self, T):
         self.mu = np.random.normal(0., 0.1, T)
     def predict(self, gamma):
-        if self.mu.dot(gamma) > 0:
+        mean = self.mu.dot(gamma)
+        if mean > 0:
             return 1
         else:
             return 0
-    def likelihood(self, Epi_dot_c, y):
-        eta = self.mu.dot(Epi_dot_c)
-        likelihood = y * eta
-        likelihood -= np.log(1 + np.exp(eta))
+    def _expected_exp_parts(self, var_phi, phi):
+        N = phi.shape[0]
+        mu_exp = np.exp(self.mu / N)
+        return phi.dot(var_phi).dot(mu_exp)
+    def _expected_log_norm(self, var_phi, phi):
+        parts = self._expected_exp_parts(var_phi, phi)
+        return np.log(1 + np.prod(parts))
+    def likelihood(self, var_phi, phi, y):
+        eta = compute_eta(var_phi, phi)
+        likelihood = y * self.mu.dot(eta)
+        likelihood -= self._expected_log_norm(var_phi, phi)
         return likelihood
-    def dv(self, v_i, i, Esticks_2nd, var_phi, y):
-        dcovs = v_deriv_helper(v_i, i, Esticks_2nd, self.mu, var_phi)
-        deriv = y * dcovs
-        Epi_dot_c = Esticks_2nd.dot(var_phi)
-        eta = self.mu.dot(Epi_dot_c)
-        eta_exp = np.exp(eta)
-        deriv -= dcovs * eta_exp / (1 + eta_exp)
-        return deriv
-    def dvar_phi(self, xnorm, stick, Epi_dot_c, y):
-        deriv_helper = lambda xnorm, c : c * xnorm - xnorm * c.dot(xnorm)
-        deriv = y * deriv_helper(xnorm, stick * self.mu)
-        eta = self.mu.dot(Epi_dot_c)
-        eta_exp = np.exp(eta)
-        coef = stick * self.mu * eta_exp / (1 + eta_exp)
-        deriv -= deriv_helper(xnorm, coef)
-        return deriv
-    def dmu(self, Epi_dot_c, y):
-        dmu = np.zeros(self.mu.shape)
-        dmu += y * Epi_dot_c
-        eta = self.mu.dot(Epi_dot_c)
-        eta_exp = np.exp(eta)
-        dmu -= Epi_dot_c * eta_exp / (1 + eta_exp)
+    def dphi(self, xnorm, phi, i, var_phi, y):
+        N = phi.shape[0]
+        dphi = deriv_helper(xnorm, y * var_phi.dot(self.mu) / N)
+        exp_parts = self._expected_exp_parts(var_phi, phi)
+        exp_prod = np.prod(exp_parts)
+        denom = 1 + exp_prod
+        exp_parts_minus_n = exp_prod / (exp_parts + 1e-100)
+        coef = exp_parts_minus_n[i] * var_phi.dot(np.exp(self.mu / N)) / denom
+        dphi -= deriv_helper(xnorm, coef)
+        return dphi
+    def dvar_phi(self, xnorm, var_phi, i, phi, y):
+        N = phi.shape[0]
+        dvar_phi = deriv_helper(xnorm, y * np.mean(phi[:,i]) * self.mu)
+        exp_parts = self._expected_exp_parts(var_phi, phi)
+        exp_prod = np.prod(exp_parts)
+        denom = 1 + exp_prod
+        exp_parts_minus_n = exp_prod / (exp_parts + 1e-100)
+        coef = phi[:,i].dot(exp_parts_minus_n) * np.exp(self.mu / N) / denom
+        dvar_phi -= deriv_helper(xnorm, coef)
+        return dvar_phi        
+    def dmu(self, var_phi, phi, y):
+        N = phi.shape[0]
+        eta = compute_eta(var_phi, phi)
+        dmu = y * eta
+        exp_parts = self._expected_exp_parts(var_phi, phi)
+        exp_prod = np.prod(exp_parts)
+        denom = 1 + exp_prod
+        exp_parts_minus_n = exp_prod / (exp_parts + 1e-100)
+        term = exp_parts_minus_n.dot(phi.dot(var_phi)) / N
+        dmu -= term * np.exp(self.mu / N) / denom
         return dmu
+    

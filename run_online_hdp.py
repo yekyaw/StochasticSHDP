@@ -12,7 +12,7 @@ np = onlinehdp.np
 def parse_args():
   parser = OptionParser()
   parser.set_defaults(C=None, T=100, K=10, D=-1, W=-1, eta=0.01, alpha=1.0, gamma=1.0,
-                      kappa=0.9, tau=1., batchsize=500, max_time=-1,
+                      kappa=0.9, tau=64., batchsize=500, max_time=-1,
                       max_iter=-1, var_converge=0.0001, 
                       corpus_name=None, data_path=None, test_data_path=None, 
                       test_data_path_in_folds=None, directory=None, save_lag=500, pass_ratio=0.5,
@@ -38,7 +38,7 @@ def parse_args():
   parser.add_option("--kappa", type="float", dest="kappa",
                     help="learning rate [0.9]")
   parser.add_option("--tau", type="float", dest="tau",
-                    help="slow down [1.0]")
+                    help="slow down [64.0]")
   parser.add_option("--batchsize", type="int", dest="batchsize",
                     help="batch size [500]")
   parser.add_option("--max_time", type="int", dest="max_time",
