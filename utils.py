@@ -5,7 +5,10 @@ import numpy as np
 from scipy.misc import logsumexp
 
 def deriv_helper(xnorm, c):
-    return c * xnorm - xnorm * c.dot(xnorm)
+    if xnorm is not None:
+        return c * xnorm - xnorm * c.dot(xnorm)
+    else:
+        return c
 
 def log_normalize(x):
     lognorm = np.tile(logsumexp(x, axis=1), (x.shape[1], 1)).T
@@ -33,5 +36,5 @@ def argmax(x):
 
 	return idx_max
 
-def compute_eta(var_phi, phi):
-    return np.mean(phi.dot(var_phi), 0)
+def compute_eta(var_phi, phi, counts, N):
+    return phi.dot(var_phi).T.dot(counts) / N
