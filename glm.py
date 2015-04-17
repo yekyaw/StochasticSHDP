@@ -43,7 +43,7 @@ class Dummy(GLM):
         return 0.
     def dvar_phi(self, var_phi, i, phi, counts, N, y, xnorm=None):
         return 0.
-    def dmu(self, var_phi, phi, counts, y):
+    def dmu(self, var_phi, phi, counts, N, y):
         return 0.
     def requires_fp(self):
         return False    
@@ -58,14 +58,14 @@ class Poisson(GLM):
         mu_exp = np.exp(self.mu / N)
         return np.power(phi.dot(var_phi).dot(mu_exp), counts)    
     def _expected_log_norm(self, var_phi, phi, counts, N):
-        parts = self._expected_log_norm_parts(self.mu, var_phi, phi, counts, N)
+        parts = self._expected_log_norm_parts(var_phi, phi, counts, N)
         return np.prod(parts)
     def likelihood(self, var_phi, phi, counts, N, y):
         eta = compute_eta(var_phi, phi, counts, N)
         likelihood = y * self.mu.dot(eta)
         likelihood -= self._expected_log_norm(var_phi, phi, counts, N)
         return likelihood
-    def dphi(self, phi, i, var_phi, counts, N, y, log_norm_minus_n, xnorm=None):
+    def dphi(self, phi, i, var_phi, counts, N, y, xnorm=None):
         dphi = deriv_helper(xnorm, y * var_phi.dot(self.mu) / N)
         log_norm_parts = self._expected_log_norm_parts(var_phi, phi, counts, N)        
         log_norm = np.prod(log_norm_parts)

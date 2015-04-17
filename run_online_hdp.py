@@ -5,7 +5,7 @@ import pickle
 import random, time
 from optparse import OptionParser
 from glob import glob
-from sklearn.metrics import confusion_matrix, classification_report, accuracy_score, hamming_loss
+from sklearn.metrics import confusion_matrix, classification_report, accuracy_score
 from sklearn.linear_model import LogisticRegression
 np = onlinehdp.np
 
@@ -221,8 +221,6 @@ def run_online_hdp():
       print("Accuracy rate : %f" % accuracy)
       print(report)    
       print(confusion)
-    hamming_accuracy = 1 - hamming_loss(labels_test, preds)
-    print("Hamming accuracy : %f" % hamming_accuracy)
 
     labels_train = np.array([doc.ys for doc in c_train.docs])
     (_, _, gammas_train) = ohdp.infer_only(c_train.docs)
