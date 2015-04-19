@@ -4,12 +4,12 @@ part of code is adapted from Matt's online lda code
 """
 import numpy as np
 import scipy.special as sp
-from scipy.optimize import minimize
 from scipy.misc import logsumexp
 from utils import log_normalize, compute_eta
 import random
 from concurrent.futures import ProcessPoolExecutor
 from multiprocessing import cpu_count
+from scipy.optimize import minimize
 from utils import deriv_helper
 from glm import *
 
@@ -20,7 +20,7 @@ mu0 = 0.3
 rhot_bound = 0.0
 burn_in_samples = 5
 num_cores = cpu_count()
-max_fp = 5
+max_fp = 3
 
 def split_chunks(l, n):
     """ Yield successive n-sized chunks from l.
@@ -302,7 +302,7 @@ class online_hdp:
         return (score, ss, count)
 
     def process_documents(self, docs, var_converge, update=True, \
-                          opt_o=False, num_workers=num_cores):
+                          opt_o=True, num_workers=num_cores):
         # Find the unique words in this mini-batch of documents...
         self.m_num_docs_parsed += len(docs)
         adding_noise = False
@@ -390,38 +390,38 @@ class online_hdp:
         for response in self.m_responses:
             response.mu = response.mu[:,idx]
 
-    def _optimize_var_phi(self, var_phi, phi, counts, N,
-                          Elogsticks_1st, Elogbeta, ys, ys_scale):
-        phi_dot_Elogbeta = np.dot(phi.T, (Elogbeta * counts).T)
-        def likelihood_var_phi(x, var_phi, i):
-            xnorm = np.exp(x - logsumexp(x))
-            temp = var_phi.copy()
-            temp[i,:] = xnorm
-            likelihood = xnorm.dot(phi_dot_Elogbeta[i,:])
-            likelihood += Elogsticks_1st.dot(xnorm) - xnorm.dot(np.log(xnorm + 1e-100))
-            for y, response in zip(ys, self.m_responses):
-                likelihood += ys_scale * response.likelihood(temp, phi, counts, N, y)
-            return likelihood
-        def compute_dvar_phi(x, var_phi, i):
-            xnorm = np.exp(x - logsumexp(x))
-            temp = var_phi.copy()
-            temp[i,:] = xnorm
-            dvar_phi = deriv_helper(xnorm, phi_dot_Elogbeta[i,:])
-            dvar_phi += deriv_helper(xnorm, Elogsticks_1st)
-            dvar_phi -= deriv_helper(xnorm, np.ones(xnorm.shape))
-            dvar_phi -= deriv_helper(xnorm, np.log(xnorm + 1e-100))
-            for y, response in zip(ys, self.m_responses):
-                dvar_phi += ys_scale * response.dvar_phi(temp, i, phi, counts, N, y, xnorm=xnorm)
-            return dvar_phi
+    # def _optimize_var_phi(self, var_phi, phi, counts, N,
+    #                       Elogsticks_1st, Elogbeta, ys, ys_scale):
+    #     phi_dot_Elogbeta = np.dot(phi.T, (Elogbeta * counts).T)
+    #     def likelihood_var_phi(x, var_phi, i):
+    #         xnorm = np.exp(x - logsumexp(x))
+    #         temp = var_phi.copy()
+    #         temp[i,:] = xnorm
+    #         likelihood = xnorm.dot(phi_dot_Elogbeta[i,:])
+    #         likelihood += Elogsticks_1st.dot(xnorm) - xnorm.dot(np.log(xnorm + 1e-100))
+    #         for y, response in zip(ys, self.m_responses):
+    #             likelihood += ys_scale * response.likelihood(temp, phi, counts, N, y)
+    #         return likelihood
+    #     def compute_dvar_phi(x, var_phi, i):
+    #         xnorm = np.exp(x - logsumexp(x))
+    #         temp = var_phi.copy()
+    #         temp[i,:] = xnorm
+    #         dvar_phi = deriv_helper(xnorm, phi_dot_Elogbeta[i,:])
+    #         dvar_phi += deriv_helper(xnorm, Elogsticks_1st)
+    #         dvar_phi -= deriv_helper(xnorm, np.ones(xnorm.shape))
+    #         dvar_phi -= deriv_helper(xnorm, np.log(xnorm + 1e-100))
+    #         for y, response in zip(ys, self.m_responses):
+    #             dvar_phi += ys_scale * response.dvar_phi(temp, i, phi, counts, N, y, xnorm=xnorm)
+    #         return dvar_phi
 
-        for i in range(var_phi.shape[0]):
-            f = lambda x: -likelihood_var_phi(x, var_phi, i)
-            g = lambda x: -compute_dvar_phi(x, var_phi, i)
-            res = minimize(f, var_phi[i,:], jac=g, method='L-BFGS-B')        
-            if res.success:
-                x = res.x
-                var_phi[i,:] = np.exp(x - logsumexp(x))
-        return var_phi            
+    #     for i in range(var_phi.shape[0]):
+    #         f = lambda x: -likelihood_var_phi(x, var_phi, i)
+    #         g = lambda x: -compute_dvar_phi(x, var_phi, i)
+    #         res = minimize(f, var_phi[i,:], jac=g, method='L-BFGS-B')        
+    #         if res.success:
+    #             x = res.x
+    #             var_phi[i,:] = np.exp(x - logsumexp(x))
+    #     return var_phi            
 
     # def _optimize_phi(self, phi, var_phi, counts, N, \
     #                   Elogsticks_2nd, Elogbeta, ys, ys_scale):
@@ -456,21 +456,25 @@ class online_hdp:
     #             phi[i,:] = np.exp(x - logsumexp(x))
     #     return phi
 
-    # def _optimize_var_phi(self, var_phi, phi, counts, N,
-    #                   Elogsticks_1st, Elogbeta, ys, ys_scale):
-    #     fixed_terms = np.dot(phi.T, (Elogbeta * counts).T)
-    #     fixed_terms += Elogsticks_1st
-    #     if self.requires_fp:
-    #         num_fp = max_fp
-    #     else:
-    #         num_fp = 1
-    #     for k in range(var_phi.shape[0]):
-    #         for i in range(num_fp):
-    #             dvar_phi = fixed_terms[k,:].copy()
-    #             for y, response in zip(ys, self.m_responses):
-    #                 dvar_phi += ys_scale * response.dvar_phi(var_phi, k, phi, counts, N, y)
-    #             var_phi[k,:] = np.exp(dvar_phi - logsumexp(dvar_phi))
-    #     return var_phi    
+    def _optimize_var_phi(self, var_phi, phi, counts, N, \
+                          Elogsticks_1st, Elogbeta, ys, ys_scale):
+        fixed_terms = np.dot(phi.T, (Elogbeta * counts).T)
+        fixed_terms += Elogsticks_1st
+        for k in range(var_phi.shape[0]):
+            dvar_phi = fixed_terms[k,:]
+            for y, response in zip(ys, self.m_responses):
+                dvar_phi += ys_scale * response.dvar_phi(var_phi, k, phi, counts, N, y)
+            var_phi[k,:] = np.exp(dvar_phi - logsumexp(dvar_phi))
+        return var_phi
+
+    def _likelihood_var_phi(self, var_phi, phi, counts, N, Elogsticks_1st, Elogbeta, ys, ys_scale):
+        likelihood = np.sum((Elogsticks_1st - np.log(var_phi + 1e-100)) * var_phi)        
+        likelihood += np.sum(phi.T * np.dot(var_phi, Elogbeta * counts))
+
+        # Y part
+        for y, response in zip(ys, self.m_responses):
+            likelihood += ys_scale * response.likelihood(var_phi, phi, counts, N, y)
+        return likelihood
 
     def _optimize_phi(self, phi, var_phi, counts, N,
                       Elogsticks_2nd, Elogbeta, ys, ys_scale):

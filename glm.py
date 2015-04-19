@@ -65,12 +65,12 @@ class Poisson(GLM):
         likelihood = y * self.mu.dot(eta)
         likelihood -= self._expected_log_norm(var_phi, phi, counts, N)
         return likelihood
-    def dphi(self, phi, i, var_phi, counts, N, y, xnorm=None):
-        dphi = deriv_helper(xnorm, y * var_phi.dot(self.mu) / N)
+    def dphi(self, phi, n, var_phi, counts, N, y, xnorm=None):
+        dphi = deriv_helper(xnorm, y * var_phi.dot(self.mu) * counts[n] / N)
         log_norm_parts = self._expected_log_norm_parts(var_phi, phi, counts, N)        
         log_norm = np.prod(log_norm_parts)
-        log_norm_parts_minus_n = log_norm / log_norm_parts[i]
-        coef = log_norm_parts_minus_n * var_phi.dot(np.exp(self.mu / N))
+        log_norm_parts_minus_n = log_norm / log_norm_parts[n]
+        coef = log_norm_parts_minus_n * var_phi.dot(np.exp(self.mu * counts[n] / N))
         dphi -= deriv_helper(xnorm, coef)
         return dphi
     def dvar_phi(self, var_phi, i, phi, counts, N, y, xnorm=None):
@@ -79,7 +79,7 @@ class Poisson(GLM):
         log_norm_parts = self._expected_log_norm_parts(var_phi, phi, counts, N)
         log_norm = np.prod(log_norm_parts)
         log_norm_parts_minus_n = log_norm / log_norm_parts
-        coef = phi[:,i].dot(log_norm_parts_minus_n) * np.exp(self.mu / N)
+        coef = phi[:,i].dot(log_norm_parts_minus_n * counts) * np.exp(self.mu / N)
         dvar_phi -= deriv_helper(xnorm, coef)
         return dvar_phi
     def dmu(self, var_phi, phi, counts, N, y):
@@ -88,7 +88,7 @@ class Poisson(GLM):
         log_norm_parts = self._expected_log_norm_parts(var_phi, phi, counts, N)
         log_norm = np.prod(log_norm_parts)
         log_norm_parts_minus_n = log_norm / log_norm_parts
-        term = log_norm_parts_minus_n.dot(phi.dot(var_phi)) / N
+        term = (log_norm_parts_minus_n * counts).dot(phi.dot(var_phi)) / N
         dmu -= term * np.exp(self.mu / N)
         return dmu
     def requires_fp(self):
@@ -114,14 +114,15 @@ class Categorical(GLM):
         likelihood = self.mu[y,:].dot(eta)
         likelihood -= self._expected_log_norm(var_phi, phi, counts, N)
         return likelihood
-    def dphi(self, phi, i, var_phi, counts, N, y, xnorm=None):
-        dphi = deriv_helper(xnorm, var_phi.dot(self.mu[y,:]) / N)
+    def dphi(self, phi, n, var_phi, counts, N, y, xnorm=None):
+        dphi = deriv_helper(xnorm, var_phi.dot(self.mu[y,:]) * counts[n] / N)
         exps_parts = self._expected_exps_parts(var_phi, phi, counts, N)
         exps = np.prod(exps_parts, 1)
         denom = np.sum(exps)
         for c in range(self.C):
-            exp_parts_minus_n = exps[c] / exps_parts[c,i]
-            coef = exp_parts_minus_n * var_phi.dot(np.exp(self.mu[c,:] / N)) / denom
+            exp_parts_minus_n = exps[c] / exps_parts[c,n]
+            mu_exp = np.exp(self.mu[c,:] * counts[n] / N)
+            coef = exp_parts_minus_n * var_phi.dot(mu_exp) / denom
             dphi -= deriv_helper(xnorm, coef)
         return dphi
     def dvar_phi(self, var_phi, i, phi, counts, N, y, xnorm=None):
@@ -132,7 +133,8 @@ class Categorical(GLM):
         denom = np.sum(exps)
         for c in range(self.C):
             exp_parts_minus_n = exps[c] / exps_parts[c,:]
-            coef = np.exp(self.mu[c,:] / N).dot(phi[:,i].dot(exp_parts_minus_n)) / denom
+            mu_exp = np.exp(self.mu[c,:] / N)
+            coef = mu_exp.dot(phi[:,i].dot(exp_parts_minus_n * counts)) / denom
             dvar_phi -= deriv_helper(xnorm, coef)
         return dvar_phi        
     def dmu(self, var_phi, phi, counts, N, y):
@@ -144,7 +146,7 @@ class Categorical(GLM):
         denom = np.sum(exps)
         for c in range(self.C):
             exp_parts_minus_n = exps[c] / exps_parts[c,:]
-            term = exp_parts_minus_n.dot(phi.dot(var_phi)) / N
+            term = (exp_parts_minus_n * counts).dot(phi.dot(var_phi)) / N
             dmu[c,:] -= term * np.exp(self.mu[c,:] / N) / denom
         return dmu
     def requires_fp(self):
@@ -170,13 +172,13 @@ class Bernoulli(GLM):
         likelihood = y * self.mu.dot(eta)
         likelihood -= self._expected_log_norm(var_phi, phi, counts, N)
         return likelihood
-    def dphi(self, phi, i, var_phi, counts, N, y, xnorm=None):
-        dphi = deriv_helper(xnorm, y * var_phi.dot(self.mu) / N)
+    def dphi(self, phi, n, var_phi, counts, N, y, xnorm=None):
+        dphi = deriv_helper(xnorm, y * var_phi.dot(self.mu) * counts[n] / N)
         exp_parts = self._expected_exp_parts(var_phi, phi, counts, N)
         exp_prod = np.prod(exp_parts)
         denom = 1 + exp_prod
-        exp_parts_minus_n = exp_prod / exp_parts[i]
-        coef = exp_parts_minus_n * var_phi.dot(np.exp(self.mu / N)) / denom
+        exp_parts_minus_n = exp_prod / exp_parts[n]
+        coef = exp_parts_minus_n * var_phi.dot(np.exp(self.mu * counts[n] / N)) / denom
         dphi -= deriv_helper(xnorm, coef)
         return dphi
     def dvar_phi(self, var_phi, i, phi, counts, N, y, xnorm=None):
@@ -186,7 +188,7 @@ class Bernoulli(GLM):
         exp_prod = np.prod(exp_parts)
         denom = 1 + exp_prod
         exp_parts_minus_n = exp_prod / exp_parts
-        coef = phi[:,i].dot(exp_parts_minus_n) * np.exp(self.mu / N) / denom
+        coef = phi[:,i].dot(exp_parts_minus_n * counts) * np.exp(self.mu / N) / denom
         dvar_phi -= deriv_helper(xnorm, coef)
         return dvar_phi        
     def dmu(self, var_phi, phi, counts, N, y):
@@ -196,7 +198,7 @@ class Bernoulli(GLM):
         exp_prod = np.prod(exp_parts)
         denom = 1 + exp_prod
         exp_parts_minus_n = exp_prod / exp_parts
-        term = exp_parts_minus_n.dot(phi.dot(var_phi)) / N
+        term = (exp_parts_minus_n * counts).dot(phi.dot(var_phi)) / N
         dmu -= term * np.exp(self.mu / N) / denom
         return dmu
     def requires_fp(self):
