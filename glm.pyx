@@ -100,7 +100,7 @@ class Poisson(GLM):
              int n, np.ndarray[DTYPE_t, ndim=2] var_phi not None, \
              np.ndarray[np.long_t] counts not None, int N, DTYPE_t y,
              xnorm=None):
-        cdef np.ndarray[DTYPE_t] y_part = y * var_phi.dot(self.mu) / N
+        cdef np.ndarray[DTYPE_t] y_part = y * var_phi.dot(self.mu) * counts[n] / N
         cdef np.ndarray[DTYPE_t] dphi = deriv_helper(xnorm, y_part)
         cdef np.ndarray[DTYPE_t] C_minus_n = self._C_minus_n(var_phi, phi, counts, N)
         cdef np.ndarray[DTYPE_t] mu_exp = np.exp(self.mu * counts[n] / N)
@@ -183,7 +183,7 @@ class Categorical(GLM):
     def dphi(self, np.ndarray[DTYPE_t, ndim=2] phi not None, int n, \
              np.ndarray[DTYPE_t, ndim=2] var_phi not None, \
              np.ndarray[np.long_t] counts not None, int N, int y, xnorm=None):
-        cdef np.ndarray[DTYPE_t] dphi = deriv_helper(xnorm, var_phi.dot(self.mu[y,:]) / N)
+        cdef np.ndarray[DTYPE_t] dphi = deriv_helper(xnorm, var_phi.dot(self.mu[y,:]) * counts[n] / N)
         cdef np.ndarray[DTYPE_t, ndim=2] exps_parts
         cdef np.ndarray[DTYPE_t] prods
         exps_parts, prods = self._all_expected_exps_parts(var_phi, phi, counts, N)
@@ -266,7 +266,7 @@ class Bernoulli(GLM):
         return likelihood
     
     def dphi(self, phi, n, var_phi, counts, N, y, xnorm=None):
-        dphi = deriv_helper(xnorm, y * var_phi.dot(self.mu) / N)
+        dphi = deriv_helper(xnorm, y * var_phi.dot(self.mu) * counts[n] / N)
         exp_parts, prod = compute_exp_parts(self.mu, var_phi, phi, counts, N)
         denom = 1 + prod
         C_minus_n = prod / exp_parts[n]

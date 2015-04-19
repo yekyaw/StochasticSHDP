@@ -87,7 +87,7 @@ class Poisson(GLM):
         return likelihood
     
     def dphi(self, phi, n, var_phi, counts, N, y, xnorm=None):
-        dphi = deriv_helper(xnorm, y * var_phi.dot(self.mu * counts[n]) / N)
+        dphi = deriv_helper(xnorm, y * var_phi.dot(self.mu) * counts[n] / N)
         C_minus_n = self._C_minus_n(var_phi, phi, counts, N)
         coef = C_minus_n[n] * var_phi.dot(np.exp(self.mu * counts[n] / N))
         dphi -= deriv_helper(xnorm, coef)
@@ -143,7 +143,7 @@ class Categorical(GLM):
         return likelihood
     
     def dphi(self, phi, n, var_phi, counts, N, y, xnorm=None):
-        dphi = deriv_helper(xnorm, var_phi.dot(self.mu[y,:] * counts[n]) / N)
+        dphi = deriv_helper(xnorm, var_phi.dot(self.mu[y,:]) * counts[n] / N)
         exps_parts, prods = self._all_expected_exps_parts(var_phi, phi, counts, N)
         sum_prods = np.sum(prods)
         for c in range(self.C):
