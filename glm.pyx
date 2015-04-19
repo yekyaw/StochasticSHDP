@@ -1,7 +1,12 @@
 import numpy as np
+cimport numpy as np
+cimport cython
 import abc
 from utils import compute_eta, deriv_helper
 from deriv_utils import compute_exp_parts, deriv_C_var_phi, deriv_C_mu
+
+DTYPE = np.float64
+ctypedef np.float64_t DTYPE_t
 
 class GLM:
     __metaclass__ = abc.ABCMeta
@@ -67,8 +72,11 @@ class Poisson(GLM):
     def predict(self, var_phi, phi, counts, N):
         mean = self._expected_log_norm(var_phi, phi, counts, N)
         return np.round(mean)
-        
-    def _expected_log_norm(self, var_phi, phi, counts, N):
+
+    @cython.boundscheck(False)
+    def _expected_log_norm(self, np.ndarray[DTYPE_t, ndim=2] var_phi not None, \
+                           np.ndarray[DTYPE_t, ndim=2] phi not None, \
+                           np.ndarray[np.long_t] counts not None, int N):
         _, prod = compute_exp_parts(self.mu, var_phi, phi, counts, N)
         return prod
 
@@ -76,32 +84,50 @@ class Poisson(GLM):
         parts, C = compute_exp_parts(self.mu, var_phi, phi, counts, N)
         C_minus_n = C / (parts + 1e-100)
         return C_minus_n
-    
-    def likelihood(self, var_phi, phi, counts, N, y):
-        eta = compute_eta(var_phi, phi, counts, N)
-        likelihood = y * self.mu.dot(eta)
+
+    @cython.boundscheck(False)
+    def likelihood(self, np.ndarray[DTYPE_t, ndim=2] var_phi not None, \
+                   np.ndarray[DTYPE_t, ndim=2] phi not None, \
+                   np.ndarray[np.long_t] counts not None, \
+                   int N, DTYPE_t y):
+        cdef np.ndarray[DTYPE_t] eta = compute_eta(var_phi, phi, counts, N)
+        cdef DTYPE_t likelihood = y * self.mu.dot(eta)
         likelihood -= self._expected_log_norm(var_phi, phi, counts, N)
         return likelihood
-    
-    def dphi(self, phi, n, var_phi, counts, N, y, xnorm=None):
-        dphi = deriv_helper(xnorm, y * var_phi.dot(self.mu) / N)
-        C_minus_n = self._C_minus_n(var_phi, phi, counts, N)
-        coef = C_minus_n[n] * var_phi.dot(np.exp(self.mu * counts[n] / N))
+
+    @cython.boundscheck(False)
+    def dphi(self, np.ndarray[DTYPE_t, ndim=2] phi not None, \
+             int n, np.ndarray[DTYPE_t, ndim=2] var_phi not None, \
+             np.ndarray[np.long_t] counts not None, int N, DTYPE_t y,
+             xnorm=None):
+        cdef np.ndarray[DTYPE_t] y_part = y * var_phi.dot(self.mu) / N
+        cdef np.ndarray[DTYPE_t] dphi = deriv_helper(xnorm, y_part)
+        cdef np.ndarray[DTYPE_t] C_minus_n = self._C_minus_n(var_phi, phi, counts, N)
+        cdef np.ndarray[DTYPE_t] mu_exp = np.exp(self.mu * counts[n] / N)
+        cdef np.ndarray[DTYPE_t] coef = C_minus_n[n] * var_phi.dot(mu_exp)
         dphi -= deriv_helper(xnorm, coef)
         return dphi
-    
-    def dvar_phi(self, var_phi, i, phi, counts, N, y, xnorm=None):
-        phi_mean = phi[:,i].dot(counts) / N
-        dvar_phi = deriv_helper(xnorm, y * phi_mean * self.mu)
-        C_minus_n = self._C_minus_n(var_phi, phi, counts, N)
-        coef = deriv_C_var_phi(C_minus_n, self.mu, phi[:,i], counts, N)
+
+    @cython.boundscheck(False)        
+    def dvar_phi(self, np.ndarray[DTYPE_t, ndim=2] var_phi not None, \
+                 int i, np.ndarray[DTYPE_t, ndim=2] phi not None, \
+                 np.ndarray[np.long_t] counts not None, int N, DTYPE_t y, \
+                 xnorm=None):
+        cdef DTYPE_t phi_mean = phi[:,i].dot(counts) / N
+        cdef np.ndarray[DTYPE_t] y_part = y * phi_mean * self.mu
+        cdef np.ndarray[DTYPE_t] dvar_phi = deriv_helper(xnorm, y_part)
+        cdef np.ndarray[DTYPE_t] C_minus_n = self._C_minus_n(var_phi, phi, counts, N)
+        cdef np.ndarray[DTYPE_t] coef = deriv_C_var_phi(C_minus_n, self.mu, phi[:,i], counts, N)
         dvar_phi -= deriv_helper(xnorm, coef)
         return dvar_phi
-    
-    def dmu(self, var_phi, phi, counts, N, y):
-        eta = compute_eta(var_phi, phi, counts, N)
-        dmu = y * eta
-        C_minus_n = self._C_minus_n(var_phi, phi, counts, N)
+
+    @cython.boundscheck(False) 
+    def dmu(self, np.ndarray[DTYPE_t, ndim=2] var_phi not None, \
+            np.ndarray[DTYPE_t, ndim=2] phi not None, \
+            np.ndarray[np.long_t] counts not None, int N, DTYPE_t y):
+        cdef np.ndarray[DTYPE_t] eta = compute_eta(var_phi, phi, counts, N)
+        cdef np.ndarray[DTYPE_t] dmu = y * eta
+        cdef np.ndarray[DTYPE_t] C_minus_n = self._C_minus_n(var_phi, phi, counts, N)
         dmu -= deriv_C_mu(C_minus_n, self.mu, phi.dot(var_phi), counts, N)
         return dmu
     
@@ -119,55 +145,95 @@ class Categorical(GLM):
         mean = self.mu.dot(eta)
         return np.argmax(mean)
 
-    def _all_expected_exps_parts(self, var_phi, phi, counts, N):
-        all_parts = np.empty((self.C, counts.shape[0]))
-        prods = np.empty(self.C)
-        for c in range(self.C):
+    @cython.boundscheck(False) 
+    def _all_expected_exps_parts(self, np.ndarray[DTYPE_t, ndim=2] var_phi not None, \
+            np.ndarray[DTYPE_t, ndim=2] phi not None, \
+            np.ndarray[np.long_t] counts not None, int N):
+        cdef int num_classes = self.C
+        cdef np.ndarray[DTYPE_t, ndim=2] all_parts = np.empty((self.C, counts.shape[0]))
+        cdef np.ndarray[DTYPE_t] prods = np.empty(num_classes)
+        cdef int c
+        cdef np.ndarray[DTYPE_t] parts
+        cdef DTYPE_t prod
+        for c in range(num_classes):
             parts, prod = compute_exp_parts(self.mu[c,:], var_phi, phi, counts, N)
             all_parts[c,:] = parts
             prods[c] = prod
         return all_parts, prods
-    
-    def _expected_log_norm(self, var_phi, phi, counts, N):
+
+    @cython.boundscheck(False) 
+    def _expected_log_norm(self, np.ndarray[DTYPE_t, ndim=2] var_phi not None, \
+            np.ndarray[DTYPE_t, ndim=2] phi not None, \
+            np.ndarray[np.long_t] counts not None, int N):
+        cdef np.ndarray[DTYPE_t] prods
         _, prods = self._all_expected_exps_parts(var_phi, phi, counts, N)
-        sum_prods = np.sum(prods)
+        cdef DTYPE_t sum_prods = np.sum(prods)
         return np.log(sum_prods)
 
-    def likelihood(self, var_phi, phi, counts, N, y):
-        eta = compute_eta(var_phi, phi, counts, N)
-        likelihood = self.mu[y,:].dot(eta)
+    @cython.boundscheck(False) 
+    def likelihood(self, np.ndarray[DTYPE_t, ndim=2] var_phi not None, \
+            np.ndarray[DTYPE_t, ndim=2] phi not None, \
+            np.ndarray[np.long_t] counts not None, int N, int y):
+        cdef np.ndarray[DTYPE_t] eta = compute_eta(var_phi, phi, counts, N)
+        cdef DTYPE_t likelihood = self.mu[y,:].dot(eta)
         likelihood -= self._expected_log_norm(var_phi, phi, counts, N)
         return likelihood
-    
-    def dphi(self, phi, n, var_phi, counts, N, y, xnorm=None):
-        dphi = deriv_helper(xnorm, var_phi.dot(self.mu[y,:]) / N)
+
+    @cython.boundscheck(False) 
+    def dphi(self, np.ndarray[DTYPE_t, ndim=2] phi not None, int n, \
+             np.ndarray[DTYPE_t, ndim=2] var_phi not None, \
+             np.ndarray[np.long_t] counts not None, int N, int y, xnorm=None):
+        cdef np.ndarray[DTYPE_t] dphi = deriv_helper(xnorm, var_phi.dot(self.mu[y,:]) / N)
+        cdef np.ndarray[DTYPE_t, ndim=2] exps_parts
+        cdef np.ndarray[DTYPE_t] prods
         exps_parts, prods = self._all_expected_exps_parts(var_phi, phi, counts, N)
-        sum_prods = np.sum(prods)
-        for c in range(self.C):
+        cdef DTYPE_t sum_prods = np.sum(prods)
+        cdef int num_classes = self.C
+        cdef int c
+        cdef DTYPE_t C_minus_n
+        cdef np.ndarray[DTYPE_t] mu_exp, coef
+        for c in range(num_classes):
             C_minus_n = prods[c] / exps_parts[c,n]
             mu_exp = np.exp(self.mu[c,:] * counts[n] / N)
             coef = C_minus_n * var_phi.dot(mu_exp) / sum_prods
             dphi -= deriv_helper(xnorm, coef)
         return dphi
-    
-    def dvar_phi(self, var_phi, i, phi, counts, N, y, xnorm=None):
-        phi_mean = phi[:,i].dot(counts) / N
-        dvar_phi = deriv_helper(xnorm, phi_mean * self.mu[y,:])
+
+    @cython.boundscheck(False) 
+    def dvar_phi(self, np.ndarray[DTYPE_t, ndim=2] var_phi not None, int i, \
+            np.ndarray[DTYPE_t, ndim=2] phi not None, \
+            np.ndarray[np.long_t] counts not None, int N, int y, \
+            xnorm=None):
+        cdef DTYPE_t phi_mean = phi[:,i].dot(counts) / N
+        cdef np.ndarray[DTYPE_t] dvar_phi = deriv_helper(xnorm, phi_mean * self.mu[y,:])
+        cdef np.ndarray[DTYPE_t, ndim=2] exps_parts
+        cdef np.ndarray[DTYPE_t] prods
         exps_parts, prods = self._all_expected_exps_parts(var_phi, phi, counts, N)
-        sum_prods = np.sum(prods)
-        for c in range(self.C):
+        cdef DTYPE_t sum_prods = np.sum(prods)
+        cdef int num_classes = self.C
+        cdef int c
+        cdef np.ndarray[DTYPE_t] C_minus_n, coef
+        for c in range(num_classes):
             C_minus_n = prods[c] / exps_parts[c,:]
             coef = deriv_C_var_phi(C_minus_n, self.mu[c,:], phi[:,i], counts, N) / sum_prods
             dvar_phi -= deriv_helper(xnorm, coef)
         return dvar_phi
-    
-    def dmu(self, var_phi, phi, counts, N, y):
-        dmu = np.zeros(self.mu.shape)        
-        eta = compute_eta(var_phi, phi, counts, N)
+
+    @cython.boundscheck(False)
+    def dmu(self, np.ndarray[DTYPE_t, ndim=2] var_phi not None, \
+            np.ndarray[DTYPE_t, ndim=2] phi not None, \
+            np.ndarray[np.long_t] counts not None, int N, int y):
+        cdef np.ndarray[DTYPE_t, ndim=2] dmu = np.zeros(self.mu.shape)        
+        cdef np.ndarray[DTYPE_t] eta = compute_eta(var_phi, phi, counts, N)
         dmu[y,:] += eta
+        cdef np.ndarray[DTYPE_t, ndim=2] exps_parts
+        cdef np.ndarray[DTYPE_t] prods
         exps_parts, prods = self._all_expected_exps_parts(var_phi, phi, counts, N)
-        sum_prods = np.sum(prods)
-        for c in range(self.C):
+        cdef DTYPE_t sum_prods = np.sum(prods)
+        cdef int num_classes = self.C
+        cdef int c
+        cdef np.ndarray[DTYPE_t] C_minus_n
+        for c in range(num_classes):
             C_minus_n = prods[c] / exps_parts[c,:]
             dmu[c,:] -= deriv_C_mu(C_minus_n, self.mu[c,:], phi.dot(var_phi), counts, N)
             dmu[c,:] /= sum_prods
