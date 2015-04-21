@@ -627,9 +627,7 @@ class online_hdp:
             
             iter += 1
 
-        eta = compute_eta(var_phi, phi, doc.counts, doc.total)
-        return(likelihood, eta)
-
+        return(likelihood, var_phi, phi)
 
     def update_lambda(self, sstats, word_list, opt_o):         
         self.m_status_up_to_date = False
@@ -726,11 +724,12 @@ class online_hdp:
 
         return (alpha, beta)
 
-    def predict(self, gamma):
-        preds = [response.predict(gamma) for response in self.m_responses]
+    def predict(self, var_phi, phi, counts, N):
+        preds = [response.predict(var_phi, phi, np.array(counts), N) \
+                 for response in self.m_responses]
         return preds
 
-    def infer_only(self, docs):
+    def infer_only(self, docs, var_converge):
         # be sure to run update_expectations()
         if not self.m_status_up_to_date:
             self.update_expectations()
@@ -738,10 +737,10 @@ class online_hdp:
         likelihood = 0
         preds = np.zeros((len(docs), len(self.m_responses)))
         gammas = np.zeros((len(docs), self.m_T))
-        alpha, beta = self.hdp_to_lda()
+        Elogsticks_1st = expect_log_sticks(self.m_var_sticks)
         for i, doc in enumerate(docs):
-            (doc_score, gamma) = lda_e_step(doc, alpha, beta)
+            (doc_score, var_phi, phi) = self.doc_e_step_infer(doc, Elogsticks_1st, var_converge)
             likelihood += doc_score
-            gammas[i] = gamma
-            preds[i,:] = self.predict(gamma)
+            gammas[i] = compute_eta(var_phi, phi, doc.counts, doc.total)
+            preds[i,:] = self.predict(var_phi, phi, doc.counts, doc.total)
         return (likelihood, preds, gammas)

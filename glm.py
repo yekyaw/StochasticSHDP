@@ -54,9 +54,9 @@ class Dummy(GLM):
 class Poisson(GLM):
     def __init__(self, T):
         self.mu = np.random.normal(0., 0.1, T)
-    def predict(self, gamma):
-        mean = self.mu.dot(gamma)
-        return np.round(np.exp(mean))
+    def predict(self, var_phi, phi, counts, N):
+        mean = self._expected_log_norm(var_phi, phi, counts, N)
+        return np.round(mean)
     def _expected_log_norm_parts(self, var_phi, phi, counts, N):
         mu_exp = np.exp(self.mu / N)
         return np.power(phi.dot(var_phi).dot(mu_exp), counts)    
@@ -101,8 +101,9 @@ class Categorical(GLM):
     def __init__(self, T, C):
         self.C = C
         self.mu = np.random.normal(0., 0.1, (C, T))
-    def predict(self, gamma):
-        mean = self.mu.dot(gamma)
+    def predict(self, var_phi, phi, counts, N):
+        eta = compute_eta(var_phi, phi, counts, N)
+        mean = self.mu.dot(eta)
         return np.argmax(mean)
     def _expected_exps_parts(self, var_phi, phi, counts, N):
         mu_exp = np.exp(self.mu / N)
@@ -111,7 +112,8 @@ class Categorical(GLM):
         return parts
     def _expected_log_norm(self, var_phi, phi, counts, N):
         parts = self._expected_exps_parts(var_phi, phi, counts, N)
-        return np.log(np.sum(parts))
+        prods = np.prod(parts, 1)
+        return np.log(np.sum(prods))
     def likelihood(self, var_phi, phi, counts, N, y):
         eta = compute_eta(var_phi, phi, counts, N)
         likelihood = self.mu[y,:].dot(eta)
@@ -160,8 +162,9 @@ class Categorical(GLM):
 class Bernoulli(GLM):
     def __init__(self, T):
         self.mu = np.random.normal(0., 0.1, T)
-    def predict(self, gamma):
-        mean = self.mu.dot(gamma)
+    def predict(self, var_phi, phi, counts, N):
+        eta = compute_eta(var_phi, phi, counts, N)
+        mean = self.mu.dot(eta)
         if mean > 0:
             return 1
         else:
