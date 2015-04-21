@@ -17,7 +17,7 @@ def parse_args():
                       corpus_name=None, data_path=None, test_data_path=None, 
                       test_data_path_in_folds=None, directory=None, save_lag=500, pass_ratio=0.5,
                       new_init=False, scale=1.0, adding_noise=False,
-                      seq_mode=False, fixed_lag=False)
+                      seq_mode=False, fixed_lag=False, load_old=False)
 
   parser.add_option("--responses", type="string", dest="responses",
                     help="response types [None]")
@@ -72,6 +72,8 @@ def parse_args():
                     help="processing the data in the sequential mode")
   parser.add_option("--fixed_lag", action="store_true", dest="fixed_lag",
                     help="fixing a saving lag")
+  parser.add_option("--load_old", action="store_true", dest="load_old",
+                    help="restart from an old model")  
   
   (options, args) = parser.parse_args()
   return options 
@@ -127,10 +129,13 @@ def run_online_hdp():
 
   print("creating online hdp instance.")
   responses = open(options.responses).read().splitlines()
-  ohdp = onlinehdp.online_hdp(responses, options.T, options.K, options.D, options.W, 
-                              options.eta, options.alpha, options.gamma,
-                              options.kappa, options.tau, options.scale,
-                              options.adding_noise)
+  if options.load_old:
+    ohdp = pickle.load(open('%s/final.model' % result_directory, 'rb'), encoding='latin1')    
+  else:
+    ohdp = onlinehdp.online_hdp(responses, options.T, options.K, options.D, options.W, 
+                                options.eta, options.alpha, options.gamma,
+                                options.kappa, options.tau, options.scale,
+                                options.adding_noise)    
   if options.new_init:
     ohdp.new_init(c_train)
 
