@@ -467,15 +467,6 @@ class online_hdp:
             var_phi[k,:] = np.exp(dvar_phi - logsumexp(dvar_phi))
         return var_phi
 
-    def _likelihood_var_phi(self, var_phi, phi, counts, N, Elogsticks_1st, Elogbeta, ys, ys_scale):
-        likelihood = np.sum((Elogsticks_1st - np.log(var_phi + 1e-100)) * var_phi)        
-        likelihood += np.sum(phi.T * np.dot(var_phi, Elogbeta * counts))
-
-        # Y part
-        for y, response in zip(ys, self.m_responses):
-            likelihood += ys_scale * response.likelihood(var_phi, phi, counts, N, y)
-        return likelihood
-
     def _optimize_phi(self, phi, var_phi, counts, N,
                       Elogsticks_2nd, Elogbeta, ys, ys_scale):
         fixed_terms = np.dot(var_phi, Elogbeta).T
