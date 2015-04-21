@@ -9,7 +9,7 @@ class GLM:
         return np.zeros(self.mu.shape)
     
     @abc.abstractmethod
-    def predict(self, gamma):
+    def predict(self, var_phi, phi, counts, N):
         return
 
     @abc.abstractmethod
@@ -38,7 +38,7 @@ class GLM:
 class Dummy(GLM):
     def __init__(self, T):
         self.mu = np.zeros(T)
-    def predict(self, gamma):
+    def predict(self, var_phi, phi, counts, N):
         return 0
     def likelihood(self, var_phi, phi, counts, N, y):
         return 0.
