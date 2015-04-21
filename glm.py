@@ -134,7 +134,7 @@ class Categorical(GLM):
         for c in range(self.C):
             exp_parts_minus_n = exps[c] / exps_parts[c,:]
             mu_exp = np.exp(self.mu[c,:] / N)
-            coef = mu_exp.dot(phi[:,i].dot(exp_parts_minus_n * counts)) / denom
+            coef = mu_exp * phi[:,i].dot(exp_parts_minus_n * counts) / denom
             dvar_phi -= deriv_helper(xnorm, coef)
         return dvar_phi        
     def dmu(self, var_phi, phi, counts, N, y):
