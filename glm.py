@@ -32,6 +32,9 @@ class GLM:
     def requires_fp(self):
         return
 
+    def optimal_ordering(self, idx):
+        self.mu = self.mu[idx]
+
 class Dummy(GLM):
     def __init__(self, T):
         self.mu = np.zeros(T)
@@ -150,7 +153,9 @@ class Categorical(GLM):
             dmu[c,:] -= term * np.exp(self.mu[c,:] / N) / denom
         return dmu
     def requires_fp(self):
-        return True    
+        return True
+    def optimal_ordering(self, idx):
+        self.mu = self.mu[:,idx]     
 
 class Bernoulli(GLM):
     def __init__(self, T):

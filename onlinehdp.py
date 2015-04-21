@@ -388,7 +388,7 @@ class online_hdp:
         self.m_lambda_sum = self.m_lambda_sum[idx]
         self.m_Elogbeta = self.m_Elogbeta[idx,:]
         for response in self.m_responses:
-            response.mu = response.mu[:,idx]
+            response.optimal_ordering(idx);
 
     # def _optimize_var_phi(self, var_phi, phi, counts, N,
     #                       Elogsticks_1st, Elogbeta, ys, ys_scale):
