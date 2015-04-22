@@ -19,6 +19,7 @@ min_adding_noise_ratio = 1
 mu0 = 0.3
 rhot_bound = 0.0
 burn_in_samples = 5
+max_fp = 3
 num_cores = cpu_count()
 
 def split_chunks(l, n):
@@ -302,7 +303,7 @@ class online_hdp:
         return (score, ss, count)
 
     def process_documents(self, docs, var_converge, update=True, \
-                          opt_o=False, num_workers=num_cores):
+                          opt_o=True, num_workers=num_cores):
         # Find the unique words in this mini-batch of documents...
         self.m_num_docs_parsed += len(docs)
         adding_noise = False
@@ -482,11 +483,16 @@ class online_hdp:
                       Elogsticks_2nd, Elogbeta, ys, ys_scale):
         fixed_terms = np.dot(var_phi, Elogbeta).T
         fixed_terms += Elogsticks_2nd
+        if self.requires_fp:
+            num_fp = max_fp
+        else:
+            num_fp = 1
         for n in range(phi.shape[0]):
-            dphi = fixed_terms[n,:].copy()            
-            for y, response in zip(ys, self.m_responses):
-                dphi += ys_scale * response.dphi(phi, n, var_phi, counts, N, y)
-            phi[n,:] = np.exp(dphi - logsumexp(dphi))
+            for i in range(num_fp):
+                dphi = fixed_terms[n,:].copy()
+                for y, response in zip(ys, self.m_responses):
+                    dphi += ys_scale * response.dphi(phi, n, var_phi, counts, N, y)
+                phi[n,:] = np.exp(dphi - logsumexp(dphi))
         return phi
 
     def doc_e_step(self, doc, ss, Elogsticks_1st, \
@@ -699,8 +705,6 @@ class online_hdp:
 
     def print_model(self):
         print(expect_sticks(self.m_var_sticks))
-        for response in self.m_responses:
-            print(response.mu)
 
     def save_topics(self, filename):
         if not self.m_status_up_to_date:
