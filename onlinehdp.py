@@ -724,10 +724,26 @@ class online_hdp:
 
         return (alpha, beta)
 
+    def lda_predict(self, gamma):
+        preds = [response.lda_predict(gamma) for response in self.m_responses]
+        return preds
+
     def predict(self, var_phi, phi, counts, N):
         preds = [response.predict(var_phi, phi, np.array(counts), N) \
                  for response in self.m_responses]
         return preds
+
+    def lda_infer(self, docs):
+        likelihood = 0
+        preds = np.zeros((len(docs), len(self.m_responses)))
+        gammas = np.zeros((len(docs), self.m_T))
+        alpha, beta = self.hdp_to_lda()
+        for i, doc in enumerate(docs):
+            (doc_score, gamma) = lda_e_step(doc, alpha, beta)
+            likelihood += doc_score
+            gammas[i] = gamma
+            preds[i,:] = self.lda_predict(gamma)
+        return (likelihood, preds, gammas)        
 
     def infer_only(self, docs, var_converge):
         # be sure to run update_expectations()

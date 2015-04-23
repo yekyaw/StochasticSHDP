@@ -124,6 +124,18 @@ def run_online_hdp():
   ohdp = pickle.load(open('%s/final.model' % result_directory, 'rb'), encoding='latin1')
   ohdp.print_model()
 
+  f = open('%s/final.gamma' % result_directory, 'w')
+  (_, _, gammas_train) = ohdp.infer_only(c_train.docs, options.var_converge)
+  labels_train = np.array([doc.ys for doc in c_train.docs])
+  for gamma in gammas_train:
+    line = ','.join([str(x) for x in gamma])  
+    f.write(line + '\n')
+
+  alpha, _ = ohdp.hdp_to_lda()
+  f = open('%s/final.alpha' % result_directory, 'w')
+  line = ','.join([str(x) for x in alpha])
+  f.write(line + '\n')
+
   # Makeing final predictions.
   if options.test_data_path is not None:
     print("Making predictions.")
@@ -140,8 +152,6 @@ def run_online_hdp():
     hamming_accuracy = 1 - hamming_loss(labels_test, preds)
     print("Hamming accuracy : %f" % hamming_accuracy)
 
-    labels_train = np.array([doc.ys for doc in c_train.docs])
-    (_, _, gammas_train) = ohdp.infer_only(c_train.docs, options.var_converge)
     print("Logistic Regression")
     for i in range(ohdp.num_responses()):
       clf = LogisticRegression()
