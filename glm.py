@@ -130,7 +130,7 @@ class Categorical(GLM):
         for c in range(self.C):
             exp_parts_minus_n = exps[c] / (exps_parts[c,n] + 1e-100)
             mu_exp = np.exp(self.mu[c,:] / N)
-            coef = counts[n] * exp_parts_minus_n * var_phi.dot(mu_exp) / denom
+            coef = counts[n] * exp_parts_minus_n * var_phi.dot(mu_exp) / (denom + 1e-100)
             dphi -= deriv_helper(xnorm, coef)
         return dphi
     def dvar_phi(self, var_phi, i, phi, counts, N, y, xnorm=None):
@@ -142,7 +142,7 @@ class Categorical(GLM):
         for c in range(self.C):
             exp_parts_minus_n = exps[c] / (exps_parts[c,:] + 1e-100)
             mu_exp = np.exp(self.mu[c,:] / N)
-            coef = mu_exp * phi[:,i].dot(exp_parts_minus_n * counts) / denom
+            coef = mu_exp * phi[:,i].dot(exp_parts_minus_n * counts) / (denom + 1e-100)
             dvar_phi -= deriv_helper(xnorm, coef)
         return dvar_phi        
     def dmu(self, var_phi, phi, counts, N, y):
@@ -195,7 +195,7 @@ class Bernoulli(GLM):
         exp_prod = np.prod(exp_parts)
         denom = 1 + exp_prod
         exp_parts_minus_n = exp_prod / (exp_parts[n] + 1e-100)
-        coef = counts[n] * exp_parts_minus_n * var_phi.dot(np.exp(self.mu / N)) / denom
+        coef = counts[n] * exp_parts_minus_n * var_phi.dot(np.exp(self.mu / N)) / (denom + 1e-100)
         dphi -= deriv_helper(xnorm, coef)
         return dphi
     def dvar_phi(self, var_phi, i, phi, counts, N, y, xnorm=None):
@@ -205,7 +205,7 @@ class Bernoulli(GLM):
         exp_prod = np.prod(exp_parts)
         denom = 1 + exp_prod
         exp_parts_minus_n = exp_prod / (exp_parts + 1e-100)
-        coef = phi[:,i].dot(exp_parts_minus_n * counts) * np.exp(self.mu / N) / denom
+        coef = phi[:,i].dot(exp_parts_minus_n * counts) * np.exp(self.mu / N) / (denom + 1e-100)
         dvar_phi -= deriv_helper(xnorm, coef)
         return dvar_phi        
     def dmu(self, var_phi, phi, counts, N, y):
