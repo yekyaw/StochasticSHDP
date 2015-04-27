@@ -171,10 +171,10 @@ def run_online_hdp():
     split_doc_count += batchsize
 
     # Do online inference and evaluate on the fly dataset
-    (score, count) = ohdp.process_documents(docs, options.var_converge)
+    score = ohdp.process_documents(docs, options.var_converge)
     total_time += time.clock() - t0
-    log_file.write("%d %d %d %.5f %d\n" % (iter, total_time,
-                    total_doc_count, score, count))
+    log_file.write("%d %d %d %.5f\n" % (iter, total_time,
+                    total_doc_count, score))
     log_file.flush()
 
     # Evaluate on the test data: fixed and folds

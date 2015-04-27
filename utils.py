@@ -36,5 +36,5 @@ def argmax(x):
 
 	return idx_max
 
-def compute_eta(var_phi, phi, counts, N):
-    return phi.dot(var_phi).T.dot(counts) / N
+def compute_eta(omega, counts, N):
+    return omega.T.dot(counts) / N
