@@ -178,7 +178,7 @@ class suff_stats:
 class online_hdp:
     ''' hdp model using stick breaking'''
     def __init__(self, responses, T, K, D, W, eta, alpha, gamma, kappa, tau, scale=1.0,
-                 adding_noise=False, penalty_lambda=1., l1_ratio=0.6, ys_scale=1.0,
+                 adding_noise=False, penalty_lambda=1., l1_ratio=0.6, ys_scale=1.,
                  num_workers=num_cores):
         """
         this follows the convention of the HDP paper
@@ -702,7 +702,8 @@ class online_hdp:
             
             iter += 1
 
-        return(likelihood, var_phi, phi)
+        omega = phi.dot(var_phi)
+        return(likelihood, omega)
 
     def update_lambda(self, sstats, word_list, opt_o):         
         self.m_status_up_to_date = False
@@ -722,14 +723,14 @@ class online_hdp:
             rhot * self.m_D * np.sum(sstats.m_var_beta_ss, axis=1) / sstats.m_batchsize
 #        self._optimize_mu(omegas_chunks, counts_chunks, ys_chunks, rhot)
 
-        rhot2 = self.m_scale * pow(self.m_tau + self.m_updatect, -0.7)
+        mu_rhot = pow(64. + self.m_updatect, -0.7)
         def grad_mu(mu, dmu):
             noisy_grad = dmu * self.m_D / sstats.m_batchsize
             noisy_grad -= self.m_penalty_lambda * self.m_l1_ratio * np.sign(mu)
             noisy_grad -= self.m_penalty_lambda * (1 - self.m_l1_ratio) * 2 * mu
             return noisy_grad
         for response, dmu in zip(self.m_responses, sstats.m_dmu_ss):
-            response.mu += rhot2 * grad_mu(response.mu, dmu)
+            response.mu += mu_rhot * grad_mu(response.mu, dmu)
 
         self.m_updatect += 1
         self.m_timestamp[word_list] = self.m_updatect
@@ -803,8 +804,8 @@ class online_hdp:
         preds = [response.lda_predict(gamma) for response in self.m_responses]
         return preds
 
-    def predict(self, var_phi, phi, counts, N):
-        preds = [response.predict(var_phi, phi, np.array(counts), N) \
+    def predict(self, omega, counts, N):
+        preds = [response.predict(omega, np.array(counts), N) \
                  for response in self.m_responses]
         return preds
 
@@ -830,8 +831,8 @@ class online_hdp:
         gammas = np.zeros((len(docs), self.m_T))
         Elogsticks_1st = expect_log_sticks(self.m_var_sticks)
         for i, doc in enumerate(docs):
-            (doc_score, var_phi, phi) = self.doc_e_step_infer(doc, Elogsticks_1st, var_converge)
+            (doc_score, omega) = self.doc_e_step_infer(doc, Elogsticks_1st, var_converge)
             likelihood += doc_score
-            gammas[i] = compute_eta(phi.dot(var_phi), doc.counts, doc.total)
-            preds[i,:] = self.predict(var_phi, phi, doc.counts, doc.total)
+            gammas[i] = compute_eta(omega, doc.counts, doc.total)
+            preds[i,:] = self.predict(omega, doc.counts, doc.total)
         return (likelihood, preds, gammas)

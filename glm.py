@@ -6,7 +6,7 @@ class GLM:
     __metaclass__ = abc.ABCMeta
 
     @abc.abstractmethod
-    def predict(self, var_phi, phi, counts, N):
+    def predict(self, omega, counts, N):
         return
 
     @abc.abstractmethod
@@ -35,7 +35,7 @@ class GLM:
 class Dummy(GLM):
     def __init__(self, T):
         self.mu = np.zeros(T)
-    def predict(self, var_phi, phi, counts, N):
+    def predict(self, omega, counts, N):
         return 0
     def likelihood(self, omega, counts, N, y):
         return 0.
@@ -51,8 +51,8 @@ class Dummy(GLM):
 class Poisson(GLM):
     def __init__(self, T):
         self.mu = np.random.normal(0., 0.1, T)
-    def predict(self, var_phi, phi, counts, N):
-        mean = self._expected_log_norm(phi.dot(var_phi), counts, N)
+    def predict(self, omega, counts, N):
+        mean = self._expected_log_norm(omega, counts, N)
         return np.round(mean)
     def _expected_log_norm_parts(self, omega, counts, N):
         mu_exp = np.exp(self.mu / N)
@@ -70,7 +70,8 @@ class Poisson(GLM):
         log_norm_parts = self._expected_log_norm_parts(phi.dot(var_phi), counts, N)        
         log_norm = np.prod(log_norm_parts)
         log_norm_parts_minus_n = log_norm / (log_norm_parts[n] + 1e-100)
-        coef = counts[n] * log_norm_parts_minus_n * var_phi.dot(np.exp(self.mu / N))
+        mu_exp = np.exp(self.mu / N)
+        coef = counts[n] * log_norm_parts_minus_n * var_phi.dot(mu_exp)
         dphi -= deriv_helper(xnorm, coef)
         return dphi
     def dvar_phi(self, var_phi, i, phi, counts, N, y, xnorm=None):
@@ -102,8 +103,8 @@ class Categorical(GLM):
     def lda_predict(self, gamma):
         mean = self.mu.dot(gamma)
         return np.argmax(mean)
-    def predict(self, var_phi, phi, counts, N):
-        eta = compute_eta(phi.dot(var_phi), counts, N)
+    def predict(self, omega, counts, N):
+        eta = compute_eta(omega, counts, N)
         mean = self.mu.dot(eta)
         return np.argmax(mean)
     def _expected_exps_parts(self, omega, counts, N):
@@ -170,8 +171,8 @@ class Bernoulli(GLM):
             return 1
         else:
             return 0        
-    def predict(self, var_phi, phi, counts, N):
-        eta = compute_eta(phi.dot(var_phi), counts, N)
+    def predict(self, omega, counts, N):
+        eta = compute_eta(omega, counts, N)
         mean = self.mu.dot(eta)
         if mean > 0:
             return 1
@@ -194,7 +195,8 @@ class Bernoulli(GLM):
         exp_prod = np.prod(exp_parts)
         denom = 1 + exp_prod
         exp_parts_minus_n = exp_prod / (exp_parts[n] + 1e-100)
-        coef = counts[n] * exp_parts_minus_n * var_phi.dot(np.exp(self.mu / N)) / (denom + 1e-100)
+        mu_exp = np.exp(self.mu / N)
+        coef = counts[n] * exp_parts_minus_n * var_phi.dot(mu_exp) / (denom + 1e-100)
         dphi -= deriv_helper(xnorm, coef)
         return dphi
     def dvar_phi(self, var_phi, i, phi, counts, N, y, xnorm=None):
