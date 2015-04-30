@@ -124,19 +124,24 @@ def run_online_hdp():
   ohdp = pickle.load(open('%s/final.model' % result_directory, 'rb'), encoding='latin1')
   ohdp.print_model()
 
-  f = open('%s/final.gamma' % result_directory, 'w')
-  (_, _, gammas_train) = ohdp.infer_only(c_train.docs, options.var_converge)
-  labels_train = np.array([doc.ys for doc in c_train.docs])
-  for gamma in gammas_train:
-    line = ','.join([str(x) for x in gamma])  
-    f.write(line + '\n')
-
   alpha, _ = ohdp.hdp_to_lda()
   f = open('%s/final.alpha' % result_directory, 'w')
   line = ','.join([str(x) for x in alpha])
   f.write(line + '\n')
 
-  # Makeing final predictions.
+  f = open('%s/final.eta' % result_directory, 'w')
+  for response in ohdp.m_responses:
+    line = ','.join([str(x) for x in response.mu])
+    f.write(line + '\n')  
+
+  (_, _, gammas_train) = ohdp.infer_only(c_train.docs, options.var_converge)
+  labels_train = np.array([doc.ys for doc in c_train.docs])
+  f = open('%s/final.gamma' % result_directory, 'w')  
+  for gamma in gammas_train:
+    line = ','.join([str(x) for x in gamma])  
+    f.write(line + '\n')
+
+  # Making final predictions.
   if options.test_data_path is not None:
     print("Making predictions.")
     labels_test = np.array([doc.ys for doc in c_test.docs])
@@ -149,18 +154,20 @@ def run_online_hdp():
       print("Accuracy rate : %f" % accuracy)
       print(report)    
       print(confusion)
+#    print(hamming_loss(labels_test[:,:-1], preds[:,:-1]))
 
     print("Logistic Regression")
     for i in range(ohdp.num_responses()):
       clf = LogisticRegression()
       clf.fit(gammas_train, labels_train[:,i])
-      preds = clf.predict(gammas_test)
-      report = classification_report(labels_test[:,i], preds)
-      confusion = confusion_matrix(labels_test[:,i], preds)
-      accuracy = accuracy_score(labels_test[:,i], preds)
+      preds[:,i] = clf.predict(gammas_test)
+      report = classification_report(labels_test[:,i], preds[:,i])
+      confusion = confusion_matrix(labels_test[:,i], preds[:,i])
+      accuracy = accuracy_score(labels_test[:,i], preds[:,i])
       print("Accuracy rate : %f" % accuracy)
       print(report)
       print(confusion)
+#    print(hamming_loss(labels_test[:,:-1], preds[:,:-1]))
 
 if __name__ == '__main__':
   run_online_hdp()

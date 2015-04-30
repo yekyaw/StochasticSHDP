@@ -9,7 +9,7 @@ from utils import log_normalize, compute_eta
 import random
 from concurrent.futures import ProcessPoolExecutor
 from multiprocessing import cpu_count
-#from scipy.optimize import minimize
+from scipy.optimize import minimize
 #from utils import deriv_helper
 from glm import *
 
@@ -462,7 +462,7 @@ class online_hdp:
     #         print(response.mu)
             
     # def _optimize_var_phi(self, var_phi, phi, counts, N,
-    #                       Elogsticks_1st, Elogbeta, ys, ys_scale):
+    #                       Elogsticks_1st, Elogbeta, ys):
     #     phi_dot_Elogbeta = np.dot(phi.T, (Elogbeta * counts).T)
     #     def likelihood_var_phi(x, var_phi, i):
     #         xnorm = np.exp(x - logsumexp(x))
@@ -471,7 +471,7 @@ class online_hdp:
     #         likelihood = xnorm.dot(phi_dot_Elogbeta[i,:])
     #         likelihood += Elogsticks_1st.dot(xnorm) - xnorm.dot(np.log(xnorm + 1e-100))
     #         for y, response in zip(ys, self.m_responses):
-    #             likelihood += ys_scale * response.likelihood(phi.dot(temp), counts, N, y)
+    #             likelihood += self.ys_scale * response.likelihood(phi.dot(temp), counts, N, y)
     #         return likelihood
     #     def compute_dvar_phi(x, var_phi, i):
     #         xnorm = np.exp(x - logsumexp(x))
@@ -482,7 +482,7 @@ class online_hdp:
     #         dvar_phi -= deriv_helper(xnorm, np.ones(xnorm.shape))
     #         dvar_phi -= deriv_helper(xnorm, np.log(xnorm + 1e-100))
     #         for y, response in zip(ys, self.m_responses):
-    #             dvar_phi += ys_scale * response.dvar_phi(temp, i, phi, counts, N, y, xnorm=xnorm)
+    #             dvar_phi += self.ys_scale * response.dvar_phi(temp, i, phi, counts, N, y, xnorm=xnorm)
     #         return dvar_phi
 
     #     for i in range(var_phi.shape[0]):
@@ -723,7 +723,7 @@ class online_hdp:
             rhot * self.m_D * np.sum(sstats.m_var_beta_ss, axis=1) / sstats.m_batchsize
 #        self._optimize_mu(omegas_chunks, counts_chunks, ys_chunks, rhot)
 
-        mu_rhot = pow(64. + self.m_updatect, -0.7)
+        mu_rhot = self.m_scale * pow(1. + self.m_updatect, -0.7)
         def grad_mu(mu, dmu):
             noisy_grad = dmu * self.m_D / sstats.m_batchsize
             noisy_grad -= self.m_penalty_lambda * self.m_l1_ratio * np.sign(mu)
