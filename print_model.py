@@ -129,11 +129,6 @@ def run_online_hdp():
   line = ','.join([str(x) for x in alpha])
   f.write(line + '\n')
 
-  f = open('%s/final.eta' % result_directory, 'w')
-  for response in ohdp.m_responses:
-    line = ','.join([str(x) for x in response.mu])
-    f.write(line + '\n')  
-
   (_, _, gammas_train) = ohdp.infer_only(c_train.docs, options.var_converge)
   labels_train = np.array([doc.ys for doc in c_train.docs])
   f = open('%s/final.gamma' % result_directory, 'w')  
@@ -141,23 +136,30 @@ def run_online_hdp():
     line = ','.join([str(x) for x in gamma])  
     f.write(line + '\n')
 
+  f = open('%s/final.eta' % result_directory, 'w')
+  for response in ohdp.m_responses:
+    line = ','.join([str(x) for x in response.mu])
+    f.write(line + '\n')  
+    
+
   # Making final predictions.
   if options.test_data_path is not None:
     print("Making predictions.")
     labels_test = np.array([doc.ys for doc in c_test.docs])
-    (_, preds, gammas_test) = ohdp.infer_only(c_test.docs, options.var_converge)
-    print("HDP")
-    for i in range(ohdp.num_responses()):
-      report = classification_report(labels_test[:,i], preds[:,i])
-      confusion = confusion_matrix(labels_test[:,i], preds[:,i])
-      accuracy = accuracy_score(labels_test[:,i], preds[:,i])
-      print("Accuracy rate : %f" % accuracy)
-      print(report)    
-      print(confusion)
+    (_, _, gammas_test) = ohdp.infer_only(c_test.docs, options.var_converge)
+    # print("HDP")
+    # for i in range(ohdp.num_responses()):
+    #   report = classification_report(labels_test[:,i], preds[:,i])
+    #   confusion = confusion_matrix(labels_test[:,i], preds[:,i])
+    #   accuracy = accuracy_score(labels_test[:,i], preds[:,i])
+    #   print("Accuracy rate : %f" % accuracy)
+    #   print(report)    
+    #   print(confusion)
 #    print(hamming_loss(labels_test[:,:-1], preds[:,:-1]))
 
     print("Logistic Regression")
-    for i in range(ohdp.num_responses()):
+    preds = np.zeros((len(c_test.docs), 256))
+    for i in range(256):
       clf = LogisticRegression()
       clf.fit(gammas_train, labels_train[:,i])
       preds[:,i] = clf.predict(gammas_test)

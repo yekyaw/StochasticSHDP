@@ -9,7 +9,7 @@ from utils import log_normalize, compute_eta
 import random
 from concurrent.futures import ProcessPoolExecutor
 from multiprocessing import cpu_count
-from scipy.optimize import minimize
+#from scipy.optimize import minimize
 #from utils import deriv_helper
 from glm import *
 
