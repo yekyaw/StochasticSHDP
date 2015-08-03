@@ -8,8 +8,7 @@ Python 3.4, Numpy, Scipy
 Run python run_online_hdp.py with the desired parameters. Run with --help for a list of available parameters.
 
 ## Required parameters
---D The number of documents in the data file. Documents should be
-delimited by "\n".
+--D The number of documents in the data file. 
 
 --W The number of distinct words in the vocabulary.
 
@@ -46,8 +45,7 @@ adjusted to change the influence of the response terms.
 
 --penalty_lambda The lambda value for the penalty terms.
 
---l1_ratio The penalty will be set to (l1_ratio * L1 term+(1 -
---l1_ratio) * L2 term)
+--l1_ratio The penalty will be set to (l1_ratio * L1 term+(1 - l1_ratio) * L2 term)
 
 --batch_size The batch size
 
