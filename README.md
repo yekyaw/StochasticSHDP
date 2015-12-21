@@ -49,7 +49,7 @@ adjusted to change the influence of the response terms.
 --l1_ratio The penalty will be set to (l1_ratio * L1 term+(1 -
   l1_ratio) * L2 term)
 
---batch_size The batch size
+--batchsize The batch size
 
 --max_time Max time to run training in seconds
 

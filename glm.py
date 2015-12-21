@@ -58,7 +58,7 @@ class Poisson(GLM):
         return np.round(mean)
     def _expected_log_norm_parts(self, omega, counts, N):
         mu_exp = np.exp(self.mu / N)
-        return np.power(omega.dot(mu_exp), counts)    
+        return omega.dot(mu_exp) * counts
     def _expected_log_norm(self, omega, counts, N):
         parts = self._expected_log_norm_parts(omega, counts, N)
         return np.prod(parts)
@@ -71,7 +71,7 @@ class Poisson(GLM):
         dphi = deriv_helper(xnorm, y * var_phi.dot(self.mu) * counts[n] / N)
         log_norm_parts = self._expected_log_norm_parts(phi.dot(var_phi), counts, N)        
         log_norm = np.prod(log_norm_parts)
-        log_norm_parts_minus_n = log_norm / (log_norm_parts[n] + 1e-100)
+        log_norm_parts_minus_n = np.exp(np.log(log_norm + 1e-100) - np.log(log_norm_parts[n] + 1e-100))
         mu_exp = np.exp(self.mu * counts[n] / N)
         coef = log_norm_parts_minus_n * var_phi.dot(mu_exp)
         dphi -= deriv_helper(xnorm, coef)
@@ -81,7 +81,7 @@ class Poisson(GLM):
         dvar_phi = deriv_helper(xnorm, y * phi_mean * self.mu)
         log_norm_parts = self._expected_log_norm_parts(phi.dot(var_phi), counts, N)
         log_norm = np.prod(log_norm_parts)
-        log_norm_parts_minus_n = log_norm / (log_norm_parts + 1e-100)
+        log_norm_parts_minus_n = np.exp(np.log(log_norm + 1e-100) - np.log(log_norm_parts + 1e-100))
         coef = phi[:,i].dot(log_norm_parts_minus_n * counts) * np.exp(self.mu / N)
         dvar_phi -= deriv_helper(xnorm, coef)
         return dvar_phi
@@ -90,7 +90,7 @@ class Poisson(GLM):
         dmu = y * eta
         log_norm_parts = self._expected_log_norm_parts(omega, counts, N)
         log_norm = np.prod(log_norm_parts)
-        log_norm_parts_minus_n = log_norm / (log_norm_parts + 1e-100)
+        log_norm_parts_minus_n = np.exp(np.log(log_norm + 1e-100) - np.log(log_norm_parts + 1e-100))
         term = (log_norm_parts_minus_n * counts).dot(omega) / N
         dmu -= term * np.exp(self.mu / N)
         dmu[np.isnan(dmu)] = 0.
