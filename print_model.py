@@ -10,40 +10,17 @@ np = onlinehdp.np
 
 def parse_args():
   parser = OptionParser()
-  parser.set_defaults(C=None, T=100, K=10, D=-1, W=-1, eta=0.01, alpha=1.0, gamma=1.0,
-                      kappa=0.9, tau=1., batchsize=500, max_time=-1,
-                      max_iter=-1, var_converge=0.0001, 
+  parser.set_defaults(kappa=0.9, tau=1., batchsize=500, var_converge=0.0001,
                       corpus_name=None, data_path=None, test_data_path=None, 
-                      test_data_path_in_folds=None, directory=None, save_lag=500, pass_ratio=0.5,
-                      new_init=False, scale=1.0, adding_noise=False,
-                      seq_mode=False, fixed_lag=False)
+                      test_data_path_in_folds=None, directory=None,
+                      seq_mode=False)
 
-  parser.add_option("--responses", type="string", dest="responses",
-                    help="response types [None]")
-  parser.add_option("--T", type="int", dest="T",
-                    help="top level truncation [100]")
-  parser.add_option("--K", type="int", dest="K",
-                    help="second level truncation [10]")
-  parser.add_option("--D", type="int", dest="D",
-                    help="number of documents [-1]")
-  parser.add_option("--W", type="int", dest="W",
-                    help="size of vocabulary [-1]")
-  parser.add_option("--eta", type="float", dest="eta",
-                    help="the topic Dirichlet [0.01]")
-  parser.add_option("--alpha", type="float", dest="alpha",
-                    help="alpha value [1.0]")
-  parser.add_option("--gamma", type="float", dest="gamma",
-                    help="gamma value [1.0]")
   parser.add_option("--kappa", type="float", dest="kappa",
                     help="learning rate [0.9]")
   parser.add_option("--tau", type="float", dest="tau",
                     help="slow down [1.0]")
   parser.add_option("--batchsize", type="int", dest="batchsize",
                     help="batch size [500]")
-  parser.add_option("--max_time", type="int", dest="max_time",
-                    help="max time to run training in seconds [100]")
-  parser.add_option("--max_iter", type="int", dest="max_iter",
-                    help="max iteration to run training [-1]")
   parser.add_option("--var_converge", type="float", dest="var_converge",
                     help="relative change on doc lower bound [0.0001]")
   parser.add_option("--corpus_name", type="string", dest="corpus_name",
@@ -57,20 +34,8 @@ def parse_args():
                     help="testing data prefix for different folds [None], not used anymore")
   parser.add_option("--directory", type="string", dest="directory",
                     help="output directory [None]")
-  parser.add_option("--save_lag", type="int", dest="save_lag",
-                    help="the minimal saving lag, increasing as save_lag * 2^i, with max i as 10; default 500.")
-  parser.add_option("--pass_ratio", type="float", dest="pass_ratio",
-                    help="The pass ratio for each split of training data [0.5]")
-  parser.add_option("--new_init", action="store_true", dest="new_init",
-                    help="use new init or not")
-  parser.add_option("--scale", type="float", dest="scale",
-                    help="scaling parameter for learning rate [1.0]")
-  parser.add_option("--adding_noise", action="store_true", dest="adding_noise",
-                    help="adding noise to the first couple of iterations or not")
   parser.add_option("--seq_mode", action="store_true", dest="seq_mode",
                     help="processing the data in the sequential mode")
-  parser.add_option("--fixed_lag", action="store_true", dest="fixed_lag",
-                    help="fixing a saving lag")
   
   (options, args) = parser.parse_args()
   return options 
