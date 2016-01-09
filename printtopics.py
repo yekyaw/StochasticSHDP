@@ -37,9 +37,8 @@ def main():
         temp = sorted(temp, key = lambda x: x[0], reverse=True)
         print('topic %d:' % (k))
         # feel free to change the "53" here to whatever fits your screen nicely.
-        for i in range(0, 60):
+        for i in range(0, len(vocab)):
             print('%20s  \t---\t  %.4f' % (vocab[temp[i][1]], temp[i][0]))
-        print
 
 if __name__ == '__main__':
     main()

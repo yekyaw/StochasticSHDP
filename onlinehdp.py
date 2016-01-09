@@ -192,7 +192,7 @@ class online_hdp:
         kappa: learning rate
         tau: slow down parameter
         """
-        self.m_W = W + 1
+        self.m_W = W
         self.m_D = D
         self.m_T = T
         self.m_K = K
